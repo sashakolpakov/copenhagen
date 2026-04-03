@@ -633,6 +633,9 @@ public:
         }
         id_to_location[id] = {cluster_id, pos};
         
+        // No centroid update - centroids are fixed after training
+        // Vectors are assigned to nearest current centroid
+        
         n_vectors++;
     }
     
