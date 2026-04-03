@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+.venv/
+venv/
+env/
+
+# C/C++ compiled
+*.o
+*.so
+*.a
+*.dylib
+*.out
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs and run outputs
+logs/
+*.log
+benchmark_log.txt
+
+# Results / figures (generated outputs)
+results/
+figures/
+
+# Symlinks to external data
+data
+
+# PDF (paper draft)
+*.pdf
+
+# Python version pin (optional to keep — keeping it)
+# .python-version
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
