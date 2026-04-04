@@ -41,6 +41,10 @@
 
 #ifdef USE_ACCELERATE
 #include <Accelerate/Accelerate.h>
+#elif defined(USE_OPENBLAS)
+#include <cblas.h>
+#elif defined(USE_MKL)
+#include <mkl_cblas.h>
 #endif
 
 #if defined(__AVX2__)
