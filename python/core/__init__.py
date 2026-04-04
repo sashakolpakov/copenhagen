@@ -3,7 +3,11 @@ import importlib.util
 import json
 import os
 
-_module_path = os.path.join(os.path.dirname(__file__), 'copenhagen.so')
+_dir = os.path.dirname(__file__)
+_candidates = [f for f in os.listdir(_dir) if f.startswith('copenhagen') and f.endswith('.so')]
+if not _candidates:
+    raise ImportError(f"copenhagen extension not found in {_dir}. Run: pip install -e .")
+_module_path = os.path.join(_dir, _candidates[0])
 _spec = importlib.util.spec_from_file_location("copenhagen", _module_path)
 _copenhagen = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_copenhagen)
