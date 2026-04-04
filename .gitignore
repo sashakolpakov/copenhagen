@@ -1,48 +1,131 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.egg
-*.egg-info/
-dist/
-build/
-.eggs/
-*.whl
-.venv/
-venv/
-env/
+*.py[codz]
+*$py.class
 
-# C/C++ compiled
-*.o
+# C extensions
 *.so
-*.a
 *.dylib
-*.out
+
+# C/C++ build artifacts
+*.o
+*.d
+*.a
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py.cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Sphinx documentation
+docs/_build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# pyenv
+# .python-version
+
+# Environments
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# Ruff stuff:
+.ruff_cache/
+
+# PyPI configuration file
+.pypirc
+
+# Cursor
+.cursorignore
+.cursorindexingignore
 
 # macOS
 .DS_Store
-.AppleDouble
-.LSOverride
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Data folder
+data/
 
 # Logs and run outputs
 logs/
 *.log
-benchmark_log.txt
 
 # Results / figures (generated outputs)
 results/
 figures/
 
-# Symlinks to external data
-data
+# PNGs everywhere except /figures (benchmark output lives there)
+*.png
+!figures/*.png
 
-# PDF (paper draft)
+# PDF (paper drafts)
 *.pdf
-
-# Python version pin (optional to keep — keeping it)
-# .python-version
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb

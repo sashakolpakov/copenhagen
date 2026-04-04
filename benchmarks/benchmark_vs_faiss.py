@@ -27,7 +27,7 @@ from _bench_common import (
 
 _FAMILY_STYLE = {
     **FAMILY_STYLE_BASE,
-    "DynamicIVF": dict(color="#1f77b4", marker="o", ls="-", lw=2),
+    "Copenhagen": dict(color="#1f77b4", marker="o", ls="-", lw=2),
 }
 
 

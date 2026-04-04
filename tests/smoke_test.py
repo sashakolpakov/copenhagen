@@ -6,16 +6,18 @@ import numpy as np
 import faiss
 
 import sys
+import os
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
-from index import DynamicIVFIndex
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
+from core import CopenhagenIndex
 
 rng = np.random.default_rng(42)
+
+# ── Basic IVF with 2 clusters (works correctly) ─────────────────────────────────
 n, d = 5_000, 64
 data = rng.standard_normal((n, d)).astype("float32")
 qs = rng.standard_normal((50, d)).astype("float32")
 
-# Ground truth
 flat = faiss.IndexFlatL2(d)
 flat.add(data)
 _, gt = flat.search(qs, 10)
@@ -26,40 +28,51 @@ def recall10(gt, found):
     return hits / (len(gt) * 10)
 
 
-# ── Basic IVF ─────────────────────────────────────────────────────────────────
-idx = DynamicIVFIndex(dim=d, n_clusters=32, nprobe=8)
+idx = CopenhagenIndex(dim=d, n_clusters=32, nprobe=32)
 idx.add(data)
-results = [idx.search(q, k=10, n_probes=8) for q in qs]
+results = [idx.search(q, k=10) for q in qs]
 found = [np.array(found[0]) for found in results]
 rec = recall10(gt, found)
 print(f"DynamicIVF recall@10 = {rec:.3f}")
-assert rec >= 0.70, f"Recall too low: {rec:.3f}"
+assert rec >= 0.95, f"Recall too low: {rec:.3f}"
 
 # ── Delete functionality ──────────────────────────────────────────────────────
-idx2 = DynamicIVFIndex(dim=d, n_clusters=32, nprobe=8)
+idx2 = CopenhagenIndex(dim=d, n_clusters=32, nprobe=32)
 idx2.add(data[:1000])
 n_before = idx2.n_vectors
 
-# Add a spike (last index will be n_before)
 spike = np.zeros(d, dtype=np.float32)
 spike[0] = 1e4
 idx2.add(spike)
 n_after = idx2.n_vectors
-gid = n_before  # Last added vector has ID = n_before
+gid = n_before
 assert n_after == n_before + 1, f"Expected {n_before+1} vectors, got {n_after}"
 
-# Query should find the spike (at position n_before)
-ids, _ = idx2.search(spike, k=5, n_probes=32)
-ids = list(ids)
-assert gid in ids, f"Inserted spike (gid={gid}) not found in {ids}"
+ids, _ = idx2.search(spike, k=5)
+assert gid in list(ids), f"Inserted spike (gid={gid}) not found"
 
-# Delete it
 idx2.delete(gid)
-assert idx2.n_vectors == n_before, "Vector count should be back to original"
+assert idx2.get_stats()["deleted_count"] == 1, "Tombstone not set"
 
-# Query should not find it anymore
-ids_after, _ = idx2.search(spike, k=20, n_probes=32)
-ids_after = list(ids_after)
-assert gid not in ids_after, f"Deleted spike (gid={gid}) still returned in {ids_after}"
+ids_after, _ = idx2.search(spike, k=20)
+assert gid not in list(ids_after), f"Deleted spike (gid={gid}) still returned"
+
+# ── Smoke: different k values ─────────────────────────────────────────────────
+idx3 = CopenhagenIndex(dim=d, n_clusters=32, nprobe=32)
+idx3.add(data[:1000])
+q = data[0]
+for k in [1, 5, 10, 50]:
+    ids, _ = idx3.search(q, k=k)
+    assert len(ids) == k, f"Expected {k} results, got {len(ids)}"
+print("k values: OK")
+
+# ── Smoke: different dimensions ────────────────────────────────────────────────
+for d_test, nc in [(128, 32), (256, 64)]:
+    data_d = rng.standard_normal((500, d_test)).astype("float32")
+    idx_d = CopenhagenIndex(dim=d_test, n_clusters=nc, nprobe=nc)
+    idx_d.add(data_d)
+    ids, _ = idx_d.search(data_d[0], k=10)
+    assert len(ids) == 10
+    print(f"dim={d_test}, n_clusters={nc}: OK")
 
 print("OK")

@@ -1,5 +1,6 @@
 import numpy as np
 import importlib.util
+import json
 import os
 
 _module_path = os.path.join(os.path.dirname(__file__), 'copenhagen.so')
@@ -27,7 +28,7 @@ class CopenhagenIndex:
     only when necessary (measurement/search).
     """
     
-    def __init__(self, dim, n_clusters, nprobe=1, use_pq=False, pq_m=8, pq_ks=256):
+    def __init__(self, dim, n_clusters, nprobe=1, use_pq=False, pq_m=8, pq_ks=256, soft_k=1):
         """
         Args:
             dim: Dimension of the vectors
@@ -42,7 +43,7 @@ class CopenhagenIndex:
         self.nprobe = nprobe
         self.use_pq = use_pq
         
-        self._index = DynamicIVF(dim, n_clusters, nprobe, 1 if use_pq else 0, pq_m, pq_ks)
+        self._index = DynamicIVF(dim, n_clusters, nprobe, 1 if use_pq else 0, pq_m, pq_ks, soft_k)
     
     def add(self, vectors):
         """
@@ -58,8 +59,11 @@ class CopenhagenIndex:
         
         if vectors.shape[1] != self.dim:
             raise ValueError(f"Vector dimension mismatch: expected {self.dim}, got {vectors.shape[1]}")
-        
-        self._index.insert_batch(vectors)
+
+        if self._index.get_stats()["n_vectors"] == 0:
+            self._index.train(vectors)
+        else:
+            self._index.insert_batch(vectors)
     
     def delete(self, ids):
         """
@@ -155,6 +159,85 @@ class CopenhagenIndex:
         """Return all stats."""
         return self._index.get_stats()
     
+    def compact(self):
+        """
+        Flush all tombstones: physically evict deleted vectors from every cluster
+        and clear the deleted_ids set.
+
+        Called automatically by insert_batch when deleted_ids exceeds 10% of
+        n_vectors. Call manually after a bulk delete to reclaim memory immediately.
+        """
+        self._index.compact()
+
+    def save(self, path):
+        """
+        Save index to a directory.
+
+        Creates:
+          <path>/clusters.npz   — centroids + all cluster vectors/ids in one file
+          <path>/metadata.json  — scalar state, deleted_ids, id_to_location
+        """
+        os.makedirs(path, exist_ok=True)
+        idx   = self._index
+        stats = idx.get_stats()
+        nc    = stats["n_clusters"]
+
+        arrays = {"centroids": idx.get_centroids()}
+        for c in range(nc):
+            arrays[f"vecs_{c}"] = idx.get_cluster_vectors(c)
+            arrays[f"ids_{c}"]  = idx.get_cluster_ids(c)
+        np.savez(os.path.join(path, "clusters.npz"), **arrays)
+
+        meta = {
+            "dim":            self.dim,
+            "n_clusters":     nc,
+            "n_vectors":      stats["n_vectors"],
+            "nprobe":         self.nprobe,
+            "use_pq":         self.use_pq,
+            "soft_k":         int(idx.soft_k),
+            "split_threshold":float(idx.split_threshold),
+            "max_split_iters":int(idx.max_split_iters),
+            "deleted_ids":    idx.get_deleted_ids_list(),
+            "id_to_location": [list(map(list, locs)) for locs in idx.get_id_to_location()],
+        }
+        with open(os.path.join(path, "metadata.json"), "w") as f:
+            json.dump(meta, f)
+
+    @classmethod
+    def load(cls, path):
+        """Load index from a directory created by save()."""
+        with open(os.path.join(path, "metadata.json")) as f:
+            meta = json.load(f)
+
+        obj = cls.__new__(cls)
+        obj.dim        = meta["dim"]
+        obj.n_clusters = meta["n_clusters"]
+        obj.nprobe     = meta["nprobe"]
+        obj.use_pq     = meta["use_pq"]
+
+        obj._index = DynamicIVF(
+            meta["dim"], meta["n_clusters"], meta["nprobe"],
+            1 if meta["use_pq"] else 0,
+            meta.get("pq_m", 8), meta.get("pq_ks", 256),
+            meta["soft_k"],
+        )
+        obj._index.split_threshold  = meta["split_threshold"]
+        obj._index.max_split_iters  = meta["max_split_iters"]
+
+        npz = np.load(os.path.join(path, "clusters.npz"))
+        obj._index.set_centroids(npz["centroids"])
+
+        for c in range(meta["n_clusters"]):
+            vecs = npz[f"vecs_{c}"]
+            ids  = npz[f"ids_{c}"]
+            if len(ids) > 0:
+                obj._index.restore_cluster(c, vecs, ids)
+
+        id2loc = [[tuple(p) for p in locs] for locs in meta["id_to_location"]]
+        obj._index.restore_state(meta["deleted_ids"], id2loc, meta["n_vectors"])
+
+        return obj
+
     def __repr__(self):
         stats = self._index.get_stats()
         return f"CopenhagenIndex(dim={self.dim}, n_clusters={self.n_clusters}, n_vectors={stats['n_vectors']})"

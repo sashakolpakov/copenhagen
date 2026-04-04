@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
-from index import DynamicIVFIndex
+from core import CopenhagenIndex as DynamicIVFIndex
 
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -181,9 +181,9 @@ def run_evaluation(configs, queries, gt, data, n, exact_labels=()):
 
 # ── figures ───────────────────────────────────────────────────────────────────
 
-FAMILY_STYLE_BASE = {
+    FAMILY_STYLE_BASE = {
     "Flat L2":  dict(color="black", marker="*", ls="none", ms=14, zorder=5),
-    "DynamicIVF": dict(color="#1f77b4", marker="o", ls="-", lw=2, ms=7),
+    "Copenhagen": dict(color="#1f77b4", marker="o", ls="-", lw=2, ms=7),
 }
 
 
@@ -265,9 +265,9 @@ def build_dynamic_ivf_configs(data, queries, gt):
             if nc > n:
                 continue
 
-            print(f"  Building DynamicIVF n_clusters={nc} nprobe={np_}...", end=" ", flush=True)
+            print(f"  Building Copenhagen n_clusters={nc} nprobe={np_}...", end=" ", flush=True)
             t0 = time.perf_counter()
-            idx = DynamicIVFIndex(dim=d, n_clusters=nc, nprobe=np_)
+            idx = CopenhagenIndex(dim=d, n_clusters=nc, nprobe=np_)
             idx.add(data)
             print(f"{time.perf_counter() - t0:.2f}s")
 
@@ -276,7 +276,7 @@ def build_dynamic_ivf_configs(data, queries, gt):
                     return index.search(q, k=K_MAX, n_probes=np_)
                 return fn
 
-            label = f"DynamicIVF n_clusters={nc} nprobe={np_}"
+            label = f"Copenhagen n_clusters={nc} nprobe={np_}"
             configs.append((label, make_query_fn(idx, nc, np_)))
 
     return configs

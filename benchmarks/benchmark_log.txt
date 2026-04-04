@@ -1,0 +1,28 @@
+============================================================
+COPENHAGEN BENCHMARK SUITE
+============================================================
+
+Loading datasets...
+  Generating synthetic data...
+    Synthetic: (20000, 128)
+
+--- Dynamic Updates ---
+  FAISS incremental (rebuild)...
+    Initial: 0.078s, Incremental rebuild: 0.092s
+  Copenhagen incremental...
+    Initial: 0.335s, Incremental add: 0.167s
+  Delete 2000 vectors...
+    FAISS rebuild: 0.088s, Copenhagen delete: 0.006s
+
+Results saved to: benchmarks/../results/dynamic_updates_20260403_092945.json
+
+============================================================
+Generating plots...
+============================================================
+  Saved: benchmarks/../figures/dynamic_updates.png
+
+Plots saved to: benchmarks/../figures
+
+============================================================
+BENCHMARK COMPLETE
+============================================================
