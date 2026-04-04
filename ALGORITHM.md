@@ -30,10 +30,18 @@ geometry — using two classical techniques:
 convex hulls because the hull query is Boolean (is point q inside the hull?).
 You cannot subtract tombstone contributions from a yes/no answer.
 
+**The quarter-full invariant**: The paper relaxes the standard logarithmic
+method (which requires buckets to be strictly empty or full) to allow partial
+filling, maintaining the invariant that each bucket is *at most quarter-full* at
+the high level. This is what makes the amortized analysis go through in the
+presence of deletions: it ensures enough work separates consecutive merge events
+to amortize the cost. Eager merges are required to enforce this — when a bucket
+drops below threshold, it must merge immediately.
+
 **What is new in the paper**: correctly combining these classical techniques for
-the fully dynamic case, proving the "quarter-full invariant" needed for amortized
+the fully dynamic case, proving the quarter-full invariant suffices for amortized
 guarantees, and shipping an implementation that handles real-world degeneracies
-(duplicate coordinates) that crash all existing open-source implementations.
+(coincident coordinates) that crash all existing open-source implementations.
 
 **What the paper does not do**: it does not propose a dynamic ANN index. It does
 not address IVF, soft assignments, cluster splitting, or distribution drift.
@@ -73,12 +81,40 @@ live cluster size), not a full retrain of all `n_clusters` centroids
 We do **not** claim the O(log n log log n) amortized guarantee — we have no
 bucket hierarchy and no merge step. The analogy is conceptual, not formal.
 
-### 2.3 Imbalance threshold ≈ quarter-full invariant
+### 2.3 Live-count tracking mirrors the quarter-full invariant
 
-The paper's quarter-full invariant bounds merge cost by ensuring no bucket is
-too empty when a merge triggers. Our `split_threshold` (default: 3× mean live
-cluster size) bounds imbalance for the same practical reason: predictable
-per-cluster search cost.
+The paper's quarter-full invariant is about rebalancing decisions based on
+*live* element count, not physical slot count. Copenhagen has
+`cluster_live_count[]` for exactly this reason: tombstoned vectors must not
+inflate a cluster's apparent size and trigger spurious splits on dead space.
+The split decision uses live count:
+
+```cpp
+float mean_size = (float)total_live / n_clusters;
+if (cluster_live_count[c] > mean_size * split_threshold)
+    split_cluster(c);
+```
+
+We do **not** implement eager merges when a cluster empties out. The paper
+requires these to enforce the quarter-full invariant and prove amortized bounds.
+In practice, merges are expensive under soft assignment (each merged vector has
+`soft_k` entries in `id_to_location` to update) and can cascade under bulk
+deletes. We replace the merge trigger with lazy compaction at a 10% tombstone
+threshold, sacrificing the formal guarantee for operational simplicity.
+
+### 2.4 The Voronoi connection
+
+Convex hulls and IVF are related through **point-hyperplane duality**: the
+Voronoi diagram of a point set is the dual of its convex hull. The paper's
+bucket structure partitions points into subsets each maintaining their own local
+hull; Copenhagen's IVF structure partitions vectors into Voronoi cells each
+maintaining their own local candidate pool. The rebalancing problems are
+structurally analogous: both detect when a region has grown too large and perform
+local restructuring (merge two subhulls / split one Voronoi cell).
+
+The paper also handles boundary degeneracies (coincident x-coordinates).
+The IVF analogue is vectors equidistant from two centroids; `soft_k > 1`
+handles this by indexing boundary vectors in both cells.
 
 ---
 
