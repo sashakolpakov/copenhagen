@@ -139,6 +139,7 @@ namespace py = pybind11;
 struct Cluster {
     float*      vectors;
     float*      vec_sum;
+    float*      norms;   // precomputed ||v||² per slot, parallel to ids
     int*        ids;
     int         size;
     int         capacity;
@@ -147,15 +148,16 @@ struct Cluster {
     std::string mmap_path;
     size_t      mmap_size;   // current mapping size in bytes
 
-    Cluster() : vectors(nullptr), vec_sum(nullptr), ids(nullptr),
+    Cluster() : vectors(nullptr), vec_sum(nullptr), norms(nullptr), ids(nullptr),
                 size(0), capacity(0), mmap_size(0) {}
 
     Cluster(Cluster&& other) noexcept
-        : vectors(other.vectors), vec_sum(other.vec_sum), ids(other.ids),
+        : vectors(other.vectors), vec_sum(other.vec_sum), norms(other.norms), ids(other.ids),
           size(other.size), capacity(other.capacity),
           mmap_path(std::move(other.mmap_path)), mmap_size(other.mmap_size) {
         other.vectors   = nullptr;
         other.vec_sum   = nullptr;
+        other.norms     = nullptr;
         other.ids       = nullptr;
         other.size      = 0;
         other.capacity  = 0;
@@ -166,9 +168,11 @@ struct Cluster {
         if (this != &other) {
             _free_vectors();
             if (vec_sum) free(vec_sum);
+            if (norms)   free(norms);
             if (ids)     free(ids);
             vectors    = other.vectors;  other.vectors   = nullptr;
             vec_sum    = other.vec_sum;  other.vec_sum   = nullptr;
+            norms      = other.norms;    other.norms     = nullptr;
             ids        = other.ids;      other.ids       = nullptr;
             size       = other.size;     other.size      = 0;
             capacity   = other.capacity; other.capacity  = 0;
@@ -184,6 +188,7 @@ struct Cluster {
     ~Cluster() {
         _free_vectors();
         if (vec_sum) free(vec_sum);
+        if (norms)   free(norms);
         if (ids)     free(ids);
     }
 
@@ -201,12 +206,14 @@ struct Cluster {
     }
 
     // Open / create the cluster's .bin file, map `cap` vectors, close fd.
-    // If the file already exists and is larger than cap*dim*4, the existing
-    // size is preserved (safe for load — capacity is derived from file size).
-    void _mmap_open(int cap, int dim) {
+    // truncate_new=true: fresh construction — O_TRUNC prevents stale data reuse
+    //                    when mmap_dir is reused across index runs.
+    // truncate_new=false (default): load path — existing file content is valid.
+    void _mmap_open(int cap, int dim, bool truncate_new = false) {
 #if !defined(_WIN32)
         size_t want = (size_t)cap * dim * sizeof(float);
-        int fd = open(mmap_path.c_str(), O_CREAT | O_RDWR, 0600);
+        int oflags = O_CREAT | O_RDWR | (truncate_new ? O_TRUNC : 0);
+        int fd = open(mmap_path.c_str(), oflags, 0600);
         if (fd < 0)
             throw std::runtime_error("mmap open failed: " + mmap_path);
         struct stat st;
@@ -243,7 +250,7 @@ struct Cluster {
             throw std::runtime_error("mmap grow ftruncate failed: " + mmap_path);
         }
         void* addr = mmap(nullptr, new_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        close(fd);
+        close(fd);   // fd-after-close: mapping survives on POSIX
         if (addr == MAP_FAILED)
             throw std::runtime_error("mmap grow remap failed: " + mmap_path);
         vectors   = static_cast<float*>(addr);
@@ -255,12 +262,12 @@ struct Cluster {
     }
 
     // Initialise a cluster. If path is non-empty, use mmap-backed storage.
-    void init(int dim, const std::string& path = "") {
+    void init(int dim, const std::string& path = "", bool truncate_new = false) {
         vec_sum = (float*)aligned_alloc(32, dim * sizeof(float));
         std::memset(vec_sum, 0, dim * sizeof(float));
         if (!path.empty()) {
             mmap_path = path;
-            _mmap_open(64, dim);          // initial capacity 64 vectors
+            _mmap_open(64, dim, truncate_new);   // initial capacity 64 vectors
             ids = (int*)malloc((size_t)capacity * sizeof(int));
         }
         // Heap mode: vectors and ids allocated lazily on first add_vector
@@ -271,19 +278,30 @@ struct Cluster {
             int new_cap = capacity == 0 ? 64 : capacity * 2;
             if (is_mmap()) {
                 _mmap_grow(new_cap, dim);
-                ids = (int*)realloc(ids, (size_t)new_cap * sizeof(int));
+                int*   new_ids   = (int*)realloc(ids,   (size_t)new_cap * sizeof(int));
+                float* new_norms = (float*)realloc(norms, (size_t)new_cap * sizeof(float));
+                if (!new_ids || !new_norms) throw std::bad_alloc();
+                ids   = new_ids;
+                norms = new_norms;
             } else {
                 float* nv = (float*)aligned_alloc(32, (size_t)new_cap * dim * sizeof(float));
                 int*   ni = (int*)malloc((size_t)new_cap * sizeof(int));
+                float* nn = (float*)malloc((size_t)new_cap * sizeof(float));
+                if (!nv || !ni || !nn) { free(nv); free(ni); free(nn); throw std::bad_alloc(); }
                 if (vectors) { std::memcpy(nv, vectors, (size_t)size * dim * sizeof(float)); free(vectors); }
                 if (ids)     { std::memcpy(ni, ids,     (size_t)size * sizeof(int));          free(ids); }
+                if (norms)   { std::memcpy(nn, norms,   (size_t)size * sizeof(float));        free(norms); }
                 vectors  = nv;
                 ids      = ni;
+                norms    = nn;
                 capacity = new_cap;
             }
         }
         std::memcpy(vectors + size * dim, vec, dim * sizeof(float));
         ids[size] = id;
+        float norm_sq = 0;
+        for (int i = 0; i < dim; i++) norm_sq += vec[i] * vec[i];
+        norms[size] = norm_sq;
         for (int i = 0; i < dim; i++) vec_sum[i] += vec[i];
         size++;
     }
@@ -627,6 +645,36 @@ inline void blas_l2_distances(const float* queries, int nq, int d,
 #endif
 }
 
+// Like blas_l2_distances but avoids recomputing per-vector squared norms —
+// caller supplies precomputed q_sq[nq] and v_sq[nv].
+// Saves one full O(nq*d + nv*d) dot-product pass on every cluster scan.
+inline void blas_l2_distances_precomp(
+    const float* queries, const float* q_sq, int nq,
+    int d,
+    const float* vecs, const float* v_sq, int nv,
+    float* dists)
+{
+#if defined(USE_ACCELERATE) || defined(USE_OPENBLAS) || defined(USE_MKL)
+    float alpha = -2.0f, beta = 0.0f;
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                nq, nv, d, alpha, queries, d, vecs, d, beta, dists, nv);
+    for (int i = 0; i < nq; i++)
+        for (int j = 0; j < nv; j++)
+            dists[i * nv + j] += q_sq[i] + v_sq[j];
+#else
+    for (int q = 0; q < nq; q++) {
+        for (int v = 0; v < nv; v++) {
+            float dist = 0;
+            for (int i = 0; i < d; i++) {
+                float diff = queries[q * d + i] - vecs[v * d + i];
+                dist += diff * diff;
+            }
+            dists[q * nv + v] = dist;
+        }
+    }
+#endif
+}
+
 class DynamicIVF {
 public:
     int dim;
@@ -664,6 +712,7 @@ public:
 
     int max_vectors_per_probe;
     float* search_buffer;
+    float* norms_buffer;  // precomputed v_sq values, parallel to search_buffer
     float* dists_buffer;
 
     std::mt19937 rng;
@@ -684,7 +733,8 @@ public:
 
         max_vectors_per_probe = 100000;
         search_buffer = (float*)aligned_alloc(32, max_vectors_per_probe * dim * sizeof(float));
-        dists_buffer = (float*)aligned_alloc(32, max_vectors_per_probe * sizeof(float));
+        norms_buffer  = (float*)malloc(max_vectors_per_probe * sizeof(float));
+        dists_buffer  = (float*)aligned_alloc(32, max_vectors_per_probe * sizeof(float));
         search_ids.resize(max_vectors_per_probe);
 
         clusters.resize(n_clusters);
@@ -696,7 +746,7 @@ public:
             std::string path = use_mmap
                 ? mmap_dir + "/cluster_" + std::to_string(c) + ".bin"
                 : std::string();
-            clusters[c].init(dim, path);
+            clusters[c].init(dim, path, /*truncate_new=*/use_mmap);
         }
 
         if (use_pq) {
@@ -710,6 +760,7 @@ public:
     ~DynamicIVF() {
         free(centroids);
         free(search_buffer);
+        free(norms_buffer);
         free(dists_buffer);
     }
 
@@ -766,7 +817,8 @@ public:
             if (write != read) {
                 std::memcpy(cl.vectors + write * dim,
                             cl.vectors + read * dim, dim * sizeof(float));
-                cl.ids[write] = id;
+                cl.ids[write]   = id;
+                cl.norms[write] = cl.norms[read];
             }
             for (auto& loc : id_to_location[id])
                 if (loc.first == cluster_id) { loc.second = write; break; }
@@ -993,6 +1045,7 @@ public:
         // Expand centroids array (n_clusters+1)
         int new_cluster_id = n_clusters;
         float* new_centroids = (float*)aligned_alloc(32, (n_clusters + 1) * dim * sizeof(float));
+        if (!new_centroids) throw std::bad_alloc();
         std::memcpy(new_centroids, centroids, n_clusters * dim * sizeof(float));
         free(centroids);
         centroids = new_centroids;
@@ -1170,13 +1223,15 @@ public:
             if (total_vectors > max_vectors_per_probe) {
                 max_vectors_per_probe = total_vectors;
                 free(search_buffer);
+                free(norms_buffer);
                 free(dists_buffer);
                 search_buffer = (float*)aligned_alloc(32, max_vectors_per_probe * dim * sizeof(float));
+                norms_buffer  = (float*)malloc(max_vectors_per_probe * sizeof(float));
                 dists_buffer  = (float*)aligned_alloc(32, max_vectors_per_probe * sizeof(float));
                 search_ids.resize(max_vectors_per_probe);
             }
 
-            // Fill loop: compact deleted vectors lazily, then copy live vectors
+            // Fill loop: compact deleted vectors lazily, then copy live vectors + norms
             int idx = 0;
             for (int p = 0; p < probes; p++) {
                 int cid = centroid_dists[p].first;
@@ -1194,6 +1249,8 @@ public:
 
                 std::memcpy(search_buffer + idx * dim, cluster.vectors,
                             cluster.size * dim * sizeof(float));
+                std::memcpy(norms_buffer + idx, cluster.norms,
+                            cluster.size * sizeof(float));
                 for (int i = 0; i < cluster.size; i++)
                     search_ids[idx + i] = cluster.ids[i];
                 idx += cluster.size;
@@ -1203,7 +1260,12 @@ public:
 
             if (total_vectors == 0) return py::make_tuple(py::list(), py::list());
 
-            blas_l2_distances(ptr, 1, dim, search_buffer, total_vectors, dists_buffer);
+            // Use precomputed norms to skip the per-vector norm recomputation
+            float q_sq = 0;
+            for (int i = 0; i < dim; i++) q_sq += ptr[i] * ptr[i];
+            blas_l2_distances_precomp(ptr, &q_sq, 1, dim,
+                                      search_buffer, norms_buffer, total_vectors,
+                                      dists_buffer);
 
             std::vector<std::pair<int, float>> results;
             results.reserve(total_vectors);
@@ -1260,27 +1322,6 @@ public:
 
         if (nq == 0) return py::make_tuple(all_ids, all_dists);
 
-        // Pre-scan for max buffer size (post-compaction sizes may be smaller — over-alloc is safe)
-        int max_vectors = 0;
-        for (int q = 0; q < nq; q++) {
-            for (int c = 0; c < n_clusters; c++)
-                sorted_dists[c] = {c, centroid_dists_sq[q * n_clusters + c]};
-            std::sort(sorted_dists.begin(), sorted_dists.end(),
-                      [](const auto& a, const auto& b) { return a.second < b.second; });
-            int total = 0;
-            for (int p = 0; p < probes; p++)
-                total += clusters[sorted_dists[p].first].size;
-            max_vectors = std::max(max_vectors, total);
-        }
-
-        if (max_vectors == 0) {
-            for (int qi = 0; qi < nq; qi++) {
-                all_ids.append(py::list());
-                all_dists.append(py::list());
-            }
-            return py::make_tuple(all_ids, all_dists);
-        }
-
         if (use_pq) {
             for (int q = 0; q < nq; q++) {
                 pq_codebook.compute_precomputed_tables(queries + q * dim, dim);
@@ -1328,73 +1369,100 @@ public:
                 all_dists.append(py_distances);
             }
         } else {
-            if (max_vectors > max_vectors_per_probe) {
-                max_vectors_per_probe = max_vectors;
-                free(search_buffer);
-                free(dists_buffer);
-                search_buffer = (float*)aligned_alloc(32, max_vectors_per_probe * dim * sizeof(float));
-                dists_buffer  = (float*)aligned_alloc(32, max_vectors_per_probe * sizeof(float));
-                search_ids.resize(max_vectors_per_probe);
+            // Inverted cluster scan: group queries by probed cluster, then issue
+            // one GEMM per cluster instead of one GEMV per (query × cluster) pair.
+            // Turns nq*nprobe thin GEMVs into ≤n_clusters fat GEMMs.
+
+            // Precompute per-query squared norms (reused across all cluster scans)
+            std::vector<float> q_sq(nq);
+            for (int q = 0; q < nq; q++) {
+                float s = 0;
+                const float* qv = queries + q * dim;
+                for (int i = 0; i < dim; i++) s += qv[i] * qv[i];
+                q_sq[q] = s;
             }
 
-            // Per-query fill + search (sequential; avoids shared-buffer aliasing issues)
+            // Build cluster→prober inverted lists
+            std::vector<std::vector<int>> cluster_probers(n_clusters);
             for (int q = 0; q < nq; q++) {
                 for (int c = 0; c < n_clusters; c++)
                     sorted_dists[c] = {c, centroid_dists_sq[q * n_clusters + c]};
-                std::sort(sorted_dists.begin(), sorted_dists.end(),
-                          [](const auto& a, const auto& b) { return a.second < b.second; });
+                std::partial_sort(sorted_dists.begin(), sorted_dists.begin() + probes,
+                                  sorted_dists.end(),
+                                  [](const auto& a, const auto& b) { return a.second < b.second; });
+                for (int p = 0; p < probes; p++)
+                    cluster_probers[sorted_dists[p].first].push_back(q);
+            }
 
-                int idx = 0;
-                for (int p = 0; p < probes; p++) {
-                    int cid = sorted_dists[p].first;
-                    Cluster& cluster = clusters[cid];
-                    if (cluster.size == 0) continue;
+            // Per-query candidate lists
+            std::vector<std::vector<std::pair<int,float>>> candidates(nq);
 
-                    bool has_deleted = false;
-                    for (int i = 0; i < cluster.size && !has_deleted; i++)
-                        if (deleted_ids.count(cluster.ids[i])) has_deleted = true;
-                    if (has_deleted) {
-                        compact_cluster(cid);
-                        compact_pq_cluster(cid);
-                    }
+            // Process each probed cluster once with a batched GEMM
+            for (int c = 0; c < n_clusters; c++) {
+                auto& probers = cluster_probers[c];
+                if (probers.empty()) continue;
 
-                    std::memcpy(search_buffer + idx * dim, cluster.vectors,
-                                cluster.size * dim * sizeof(float));
-                    for (int i = 0; i < cluster.size; i++)
-                        search_ids[idx + i] = cluster.ids[i];
-                    idx += cluster.size;
+                Cluster& cluster = clusters[c];
+                if (cluster.size == 0) continue;
+
+                bool has_deleted = false;
+                for (int i = 0; i < cluster.size && !has_deleted; i++)
+                    if (deleted_ids.count(cluster.ids[i])) has_deleted = true;
+                if (has_deleted) {
+                    compact_cluster(c);
+                    compact_pq_cluster(c);
                 }
 
-                if (idx == 0) {
-                    all_ids.append(py::list());
-                    all_dists.append(py::list());
-                    continue;
+                int mc = cluster.size;
+                if (mc == 0) continue;
+                int np = (int)probers.size();
+
+                // Collect contiguous query rows and their precomputed norms
+                std::vector<float> qbatch(np * dim);
+                std::vector<float> qbatch_sq(np);
+                for (int qi = 0; qi < np; qi++) {
+                    int q = probers[qi];
+                    std::memcpy(qbatch.data() + qi * dim, queries + q * dim, dim * sizeof(float));
+                    qbatch_sq[qi] = q_sq[q];
                 }
 
-                blas_l2_distances(queries + q * dim, 1, dim, search_buffer, idx, dists_buffer);
+                // Batched GEMM: (np × d) · (d × mc) with precomputed vector norms
+                std::vector<float> dmat(np * mc);
+                blas_l2_distances_precomp(qbatch.data(), qbatch_sq.data(), np,
+                                          dim,
+                                          cluster.vectors, cluster.norms, mc,
+                                          dmat.data());
 
-                std::vector<std::pair<int, float>> results;
-                results.reserve(idx);
-                for (int i = 0; i < idx; i++)
-                    results.push_back({search_ids[i], dists_buffer[i]});
+                // Distribute results into per-query candidate lists
+                for (int qi = 0; qi < np; qi++) {
+                    int q = probers[qi];
+                    auto& cands = candidates[q];
+                    cands.reserve(cands.size() + mc);
+                    const float* row = dmat.data() + qi * mc;
+                    for (int vi = 0; vi < mc; vi++)
+                        cands.push_back({cluster.ids[vi], row[vi]});
+                }
+            }
 
+            // Per-query dedup + top-k
+            for (int q = 0; q < nq; q++) {
+                auto& cands = candidates[q];
                 if (soft_k > 1) {
                     std::unordered_set<int> seen;
                     int w = 0;
-                    for (int i = 0; i < (int)results.size(); i++)
-                        if (seen.insert(results[i].first).second)
-                            results[w++] = results[i];
-                    results.resize(w);
+                    for (int i = 0; i < (int)cands.size(); i++)
+                        if (seen.insert(cands[i].first).second)
+                            cands[w++] = cands[i];
+                    cands.resize(w);
                 }
-
-                int result_count = std::min(n_results, (int)results.size());
-                std::partial_sort(results.begin(), results.begin() + result_count, results.end(),
-                                  [](const auto& a, const auto& b) { return a.second < b.second; });
-
+                int result_count = std::min(n_results, (int)cands.size());
+                if (result_count > 0)
+                    std::partial_sort(cands.begin(), cands.begin() + result_count, cands.end(),
+                                      [](const auto& a, const auto& b) { return a.second < b.second; });
                 py::list py_ids, py_distances;
                 for (int i = 0; i < result_count; i++) {
-                    py_ids.append(results[i].first);
-                    py_distances.append(results[i].second);
+                    py_ids.append(cands[i].first);
+                    py_distances.append(cands[i].second);
                 }
                 all_ids.append(py_ids);
                 all_dists.append(py_distances);
@@ -1472,6 +1540,47 @@ public:
 
         // Auto-compact: flush deleted_ids when tombstone load exceeds 10%.
         // Keeps deleted_ids.count() at O(1) in compact_cluster.
+        if (n_vectors > 0 && (int)deleted_ids.size() > n_vectors / 10)
+            compact_all();
+    }
+
+    // -----------------------------------------------------------------------
+    // Insert with pre-computed cluster assignments (GPU path)
+    // Accepts vectors (n × d) and assignments (n × soft_k) already computed
+    // on the caller's device. Skips the centroid BLAS gemm entirely.
+    // -----------------------------------------------------------------------
+
+    void insert_batch_preassigned(py::array_t<float> data,
+                                  py::array_t<int>   assignments) {
+        auto buf  = data.request();
+        auto abuf = assignments.request();
+        float* ptr  = (float*)buf.ptr;
+        int*   aptr = (int*)abuf.ptr;
+        ssize_t n       = buf.shape[0];
+        int     actual_k = (int)abuf.shape[1];
+
+        for (ssize_t i = 0; i < n; i++) {
+            int id = n_vectors + (int)i;
+            if (id >= (int)id_to_location.size())
+                id_to_location.resize(id_to_location.size() * 2);
+            id_to_location[id].clear();
+
+            for (int ki = 0; ki < actual_k; ki++) {
+                int cluster_id = aptr[i * actual_k + ki];
+                if (cluster_id < 0 || cluster_id >= n_clusters) continue;
+                int pos = clusters[cluster_id].size;
+                clusters[cluster_id].add_vector(ptr + i * dim, dim, id);
+                id_to_location[id].push_back({cluster_id, pos});
+                cluster_live_count[cluster_id]++;
+                if (use_pq) {
+                    std::vector<uint8_t> codes(pq_m);
+                    pq_codebook.encode(ptr + i * dim, dim, codes.data());
+                    pq_clusters[cluster_id].add_codes(codes.data(), pq_m, id);
+                }
+            }
+        }
+        n_vectors += (int)n;
+        rebalance_if_needed();
         if (n_vectors > 0 && (int)deleted_ids.size() > n_vectors / 10)
             compact_all();
     }
@@ -1596,7 +1705,7 @@ public:
             std::string path = use_mmap
                 ? mmap_dir + "/cluster_" + std::to_string(c) + ".bin"
                 : std::string();
-            clusters[c].init(dim, path);
+            clusters[c].init(dim, path, /*truncate_new=*/use_mmap);
         }
     }
 
@@ -1607,14 +1716,22 @@ public:
         int sz = (int)vbuf.shape[0];
         Cluster& cl = clusters[c];
         cl._free_vectors();
-        if (cl.ids) { free(cl.ids); cl.ids = nullptr; }
+        if (cl.ids)   { free(cl.ids);   cl.ids   = nullptr; }
+        if (cl.norms) { free(cl.norms); cl.norms = nullptr; }
         cl.size     = sz;
         cl.capacity = sz;
         if (sz > 0) {
             cl.vectors = (float*)aligned_alloc(32, (size_t)sz * dim * sizeof(float));
             cl.ids     = (int*)malloc((size_t)sz * sizeof(int));
+            cl.norms   = (float*)malloc((size_t)sz * sizeof(float));
             std::memcpy(cl.vectors, vbuf.ptr, (size_t)sz * dim * sizeof(float));
             std::memcpy(cl.ids,     ibuf.ptr, (size_t)sz * sizeof(int));
+            const float* vptr = (const float*)vbuf.ptr;
+            for (int i = 0; i < sz; i++) {
+                float s = 0;
+                for (int j = 0; j < dim; j++) s += vptr[i*dim+j] * vptr[i*dim+j];
+                cl.norms[i] = s;
+            }
         }
         std::memset(cl.vec_sum, 0, dim * sizeof(float));
         if (c < (int)cluster_live_count.size())
@@ -1627,11 +1744,19 @@ public:
         auto ibuf = ids_arr.request();
         int sz = (int)ibuf.shape[0];
         Cluster& cl = clusters[c];
-        if (cl.ids) { free(cl.ids); cl.ids = nullptr; }
+        if (cl.ids)   { free(cl.ids);   cl.ids   = nullptr; }
+        if (cl.norms) { free(cl.norms); cl.norms = nullptr; }
         int alloc = std::max(sz, cl.capacity);  // at least as many as capacity
-        cl.ids  = (int*)malloc((size_t)alloc * sizeof(int));
-        if (sz > 0)
+        cl.ids   = (int*)malloc((size_t)alloc * sizeof(int));
+        cl.norms = (float*)malloc((size_t)alloc * sizeof(float));
+        if (sz > 0) {
             std::memcpy(cl.ids, ibuf.ptr, (size_t)sz * sizeof(int));
+            for (int i = 0; i < sz; i++) {
+                float s = 0;
+                for (int j = 0; j < dim; j++) s += cl.vectors[i*dim+j] * cl.vectors[i*dim+j];
+                cl.norms[i] = s;
+            }
+        }
         cl.size = sz;
         std::memset(cl.vec_sum, 0, dim * sizeof(float));
         if (c < (int)cluster_live_count.size())
@@ -1704,7 +1829,9 @@ PYBIND11_MODULE(copenhagen, m) {
              py::arg("mmap_dir") = "")
         .def("train",          &DynamicIVF::train,          py::arg("data"))
         .def("insert",         &DynamicIVF::insert_vector,  py::arg("vector"))
-        .def("insert_batch",   &DynamicIVF::insert_batch,   py::arg("data"))
+        .def("insert_batch",             &DynamicIVF::insert_batch,             py::arg("data"))
+        .def("insert_batch_preassigned", &DynamicIVF::insert_batch_preassigned,
+             py::arg("data"), py::arg("assignments"))
         .def("delete",         &DynamicIVF::delete_vector,  py::arg("id"))
         .def("delete_batch",   &DynamicIVF::delete_batch,   py::arg("ids"))
         .def("search",         &DynamicIVF::search,

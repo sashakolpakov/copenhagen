@@ -26,3 +26,7 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["python*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "bench_*.py"]

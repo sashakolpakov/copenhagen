@@ -301,14 +301,16 @@ multiplies expressible as `cblas_sgemm`:
 - **Insert** centroid assignment: `(n × d) · (d × k)` distance matrix
 - **Search** cluster scan: `(1 × d) · (d × m)` candidate distances
 
-Both map mechanically to `cublasSgemm`. The dynamic parts — tombstone set,
-`id_to_location`, cluster append, split logic, soft-assignment dedup — are
-cheap CPU work with no natural GPU equivalent, and can remain on host.
+The dynamic parts — tombstone set, `id_to_location`, cluster append, split
+logic, soft-assignment dedup — are cheap CPU work with no natural GPU
+equivalent, and remain on host. Only the gemm calls move to device.
 
+`torch.mm(vectors, centroids.T)` is the universal replacement for
+`cblas_sgemm`: PyTorch dispatches to cuBLAS (NVIDIA), rocBLAS (AMD), or
+Metal MPS (Apple M-series) transparently — no vendor-specific code paths.
 This makes a GPU acceleration path structurally simpler than FAISS GPU (which
 needs bespoke CUDA kernels for inverted list management) or HNSW GPU (graph
-traversal). No custom CUDA kernels are required; only the gemm calls move to
-device.
+traversal).
 
 ---
 

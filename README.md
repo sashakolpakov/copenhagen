@@ -110,6 +110,10 @@ idx2 = CopenhagenIndex.load("my_index/")
 - **Save / load (.npz)** — `save(path)` writes `clusters.npz` and
   `metadata.json`; `CopenhagenIndex.load(path)` restores the full index state
   including tombstones and `id_to_location`.
+- **GPU acceleration** — `CopenhagenIndex(device="cuda"|"mps"|"cpu")` offloads
+  centroid distance computation via `torch.mm`; PyTorch dispatches to cuBLAS,
+  rocBLAS, or Metal MPS transparently. Centroids are pinned once at train time;
+  only argmin indices are transferred back. Install `torch` to enable.
 - **BLAS-accelerated** — all dense distance computation uses `cblas_sgemm`
   via Apple Accelerate; cluster storage is 32-byte aligned for AVX/NEON
   cache efficiency.

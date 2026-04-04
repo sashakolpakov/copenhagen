@@ -28,6 +28,15 @@
   `CopenhagenIndex.load(path)` restores centroids, cluster vectors/ids,
   tombstone set, `id_to_location`, and live counts.
 
+- **GPU acceleration (PyTorch)** — `CopenhagenIndex(device="cuda"|"mps"|"cpu")`
+  offloads centroid distance computation to device via `torch.mm`. Centroids are
+  pinned once at train time; insert passes `n × d` vectors host→device and pulls
+  back only `n × soft_k` argmin indices. Dynamic parts (tombstones,
+  `id_to_location`, splits) stay on CPU. Benchmarked on MPS: 3.5–4× speedup on
+  assignment compute; end-to-end insert throughput is slightly lower than CPU at
+  current batch sizes (bookkeeping dominates). Tests: `tests/test_gpu.py`,
+  `tests/bench_gpu.py`.
+
 ---
 
 ## Priority 1: Search Quality
@@ -80,53 +89,12 @@ visualization. Analogous to AMPI's Oja sketch output.
 
 ---
 
-## Priority 4: GPU Acceleration
-
-### cuBLAS centroid distance path
-
-Copenhagen's two hot-path operations are both dense matrix multiplies:
-
-- **Insert**: `(n × d) · (d × k)` batch centroid assignment → `cublasSgemm`
-- **Search**: `(1 × d) · (d × m)` cluster scan → `cublasSgemm`
-
-These are mechanical `cblas_sgemm` → `cublasSgemm` substitutions. The dynamic
-parts — tombstone set, `id_to_location`, cluster append, split logic, dedup —
-are cheap CPU work and stay on host. No custom CUDA kernels are required.
-
-This contrasts sharply with FAISS GPU and HNSW GPU, which need bespoke CUDA
-kernels for inverted list traversal and graph neighbour updates respectively.
-Copenhagen's architecture accidentally makes GPU acceleration straightforward
-because the expensive work was already expressed as batched gemm.
-
-The `faiss-gpu` PyPI package is archived (last release Jan 2022); GPU FAISS
-now lives in the conda `faiss-gpu-cuvs` ecosystem and requires a source build
-for most users. A `cublasSgemm` path in Copenhagen would be pip-installable
-(just link cuBLAS) and simpler to distribute.
-
-**Plan**: add `use_gpu: bool` flag; in `insert_batch` and `search`, branch on
-device; copy centroid matrix to device once at train time; issue `cublasSgemm`
-for distance blocks; copy result back for argmin / topk (or keep on device with
-`thrust::sort`).
-
-**Data transfer must not become the bottleneck.** The centroid matrix (`k × d`
-floats) is copied once at train time and pinned on device — no per-query or
-per-insert transfer. For insert batches, `n × d` vectors are copied host→device
-once per `insert_batch` call; the returned argmin indices (`n × soft_k` ints)
-are the only device→host transfer. For search, the single query vector is tiny
-(`d` floats); the cluster vectors for the probed clusters should be prefetched
-to device in a single transfer (all `nprobe` clusters concatenated) rather than
-one transfer per cluster. Pinned (page-locked) host memory for the centroid and
-cluster buffers will maximise PCIe bandwidth. Measure transfer vs compute time
-explicitly before declaring a speedup.
-
----
-
 ## Won't Do
 
 - **Full logarithmic-method bucket IVF**: would give O(n log n log log n)
   amortized insert but requires 5× more memory and a much more complex
   split/merge protocol. soft_k=2 already matches FAISS rebuild recall.
-- **CUDA support**: Copenhagen targets CPU real-time insert scenarios. The
-  `faiss-gpu` PyPI package is archived (last release Jan 2022, no new releases
-  planned); GPU FAISS is only available via conda (`faiss-gpu-cuvs`) or a source
-  build, which rules it out as a practical pip-installable baseline.
+- **GPU search path**: single-query centroid ranking is too small to benefit
+  from device offload. At current batch sizes, CPU bookkeeping dominates
+  end-to-end insert time; GPU assignment compute wins at large n but the
+  transfer overhead limits net throughput gain.

@@ -17,23 +17,21 @@ DynamicIVF = _copenhagen.DynamicIVF
 
 class CopenhagenIndex:
     """
-    Copenhagen - Dynamic IVF index with quantum-inspired updates.
-    
-    Implements the logarithmic method for incremental cluster updates
-    based on paper 2604.00271v1.pdf from the University of Copenhagen.
-    
-    The name reflects our inspiration from the Copenhagen interpretation
-    of quantum mechanics - where observation (measurement) collapses
-    the wavefunction (state space), and quantum superposition allows
-    entities to exist in multiple states until observed.
-    
-    In our algorithm, vectors maintain "soft assignments" to multiple
-    clusters (superposition), which collapse to the nearest cluster
-    only when necessary (measurement/search).
+    Copenhagen — Dynamic IVF index with O(1) delete, soft assignments, and adaptive splits.
+
+    Optional GPU acceleration via PyTorch (install with `pip install copenhagen[gpu]`):
+      idx = CopenhagenIndex(dim, n_clusters, device="cuda")   # NVIDIA
+      idx = CopenhagenIndex(dim, n_clusters, device="mps")    # Apple M-series
+      idx = CopenhagenIndex(dim, n_clusters, device="cpu")    # explicit CPU (default)
+
+    When device is set, centroid distances for insert_batch are computed on the
+    specified device via torch.mm, then pre-computed assignments are passed to the
+    C++ layer via insert_batch_preassigned — skipping the CPU BLAS gemm entirely.
+    Search remains on CPU (single-query centroid ranking is too small to benefit).
     """
-    
+
     def __init__(self, dim, n_clusters, nprobe=1, use_pq=False, pq_m=8, pq_ks=256, soft_k=1,
-                 use_mmap=False, mmap_dir=""):
+                 use_mmap=False, mmap_dir="", device=None):
         """
         Args:
             dim: Dimension of the vectors
@@ -58,26 +56,58 @@ class CopenhagenIndex:
 
         self._index = DynamicIVF(dim, n_clusters, nprobe, 1 if use_pq else 0,
                                  pq_m, pq_ks, soft_k, use_mmap, mmap_dir)
+
+        # GPU state — None means CPU-only path
+        self._device       = device          # e.g. "cuda", "mps", "cpu", or None
+        self._centroids_t  = None            # centroids pinned on device (set after train)
     
+    def _pin_centroids(self):
+        """Copy centroids to the target device after training."""
+        import torch
+        c = np.ascontiguousarray(self._index.get_centroids())   # (k, d)
+        self._centroids_t = torch.from_numpy(c).to(self._device)
+
+    def _gpu_assign(self, vectors):
+        """Compute top-soft_k cluster assignments on device; return (n, soft_k) int32 array."""
+        import torch
+        v = torch.from_numpy(np.ascontiguousarray(vectors)).to(self._device)  # (n, d)
+        c = self._centroids_t                                                  # (k, d)
+        # L2²: ||v - c||² = ||v||² + ||c||² - 2·v·cᵀ
+        v_sq = (v * v).sum(dim=1, keepdim=True)          # (n, 1)
+        c_sq = (c * c).sum(dim=1, keepdim=True).T        # (1, k)
+        dists = v_sq + c_sq - 2.0 * torch.mm(v, c.T)    # (n, k)
+        k = min(self._index.soft_k, self._index.get_stats()["n_clusters"])
+        _, idx = torch.topk(dists, k, dim=1, largest=False, sorted=True)
+        return idx.cpu().numpy().astype(np.int32)         # (n, k)
+
     def add(self, vectors):
         """
         Add vectors to the index (incremental insert).
-        
+
         Args:
             vectors: numpy array of shape (n, dim) or (dim,)
         """
         vectors = np.asarray(vectors, dtype=np.float32)
-        
+
         if vectors.ndim == 1:
             vectors = vectors.reshape(1, -1)
-        
+
         if vectors.shape[1] != self.dim:
             raise ValueError(f"Vector dimension mismatch: expected {self.dim}, got {vectors.shape[1]}")
 
         if self._index.get_stats()["n_vectors"] == 0:
             self._index.train(vectors)
+            if self._device is not None:
+                self._pin_centroids()
         else:
-            self._index.insert_batch(vectors)
+            if self._device is not None and self._centroids_t is not None:
+                assignments = self._gpu_assign(vectors)
+                self._index.insert_batch_preassigned(vectors, assignments)
+                # Re-pin if splits added new centroids
+                if self._index.get_stats()["n_clusters"] != len(self._centroids_t):
+                    self._pin_centroids()
+            else:
+                self._index.insert_batch(vectors)
     
     def delete(self, ids):
         """

@@ -117,4 +117,12 @@ def _ext_modules():
     ]
 
 
-setup(ext_modules=_ext_modules())
+setup(
+    ext_modules=_ext_modules(),
+    extras_require={
+        # pip install copenhagen[gpu]
+        # Installs PyTorch CPU wheel; users on CUDA/MPS should install torch
+        # themselves first (vendor-specific wheels from pytorch.org).
+        "gpu": ["torch"],
+    },
+)

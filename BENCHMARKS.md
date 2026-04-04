@@ -116,6 +116,40 @@ requires full index rebuild (~88 ms for this corpus size, ~150,000× slower).
 
 ---
 
+## 6. GPU Performance (`tests/bench_gpu.py`)
+
+**Hardware**: Apple M-series (MPS), d=64, k=32. Run: `python tests/bench_gpu.py`
+
+**Transfer (host→device→host round-trip):**
+
+| n       | MB   | ms   | GB/s |
+|---------|------|------|------|
+| 10,000  | 2.6  | 1.5  | 1.7  |
+| 50,000  | 12.8 | 2.5  | 5.1  |
+| 100,000 | 25.6 | 5.8  | 4.5  |
+
+**Centroid assignment compute (torch.mm vs numpy):**
+
+| n       | CPU (ms) | GPU/MPS (ms) | speedup |
+|---------|----------|--------------|---------|
+| 10,000  | 8.2      | 2.4          | 3.5×    |
+| 50,000  | 94.1     | 22.8         | 4.1×    |
+| 100,000 | 101.0    | 50.7         | 2.0×    |
+
+**End-to-end insert throughput (vectors/s):**
+
+| n       | CPU       | GPU/MPS   | speedup |
+|---------|-----------|-----------|---------|
+| 10,000  | 1,422,307 | 913,482   | 0.64×   |
+| 50,000  | 1,760,016 | 1,373,310 | 0.78×   |
+| 100,000 | 1,868,021 | 1,275,125 | 0.68×   |
+
+GPU wins 3.5–4× on the gemm alone but loses end-to-end because C++ bookkeeping
+(tombstones, `id_to_location`, soft-k dedup) dominates insert time and can't be
+offloaded. Centroid pinning: ~0.25 ms one-time cost.
+
+---
+
 ## Running the Benchmarks
 
 ```bash
