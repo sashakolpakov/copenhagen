@@ -105,14 +105,13 @@ static inline float simd_pq_distance(float* const* tables, const uint8_t* codes,
     int m = 0;
 
     for (; m + 4 <= M; m += 4) {
-        uint32x4_t indices = vld1q_u32((const uint32_t*)(codes + m));
-
-        float32x4_t d0 = vld1q_f32(tables[m] + codes[m]);
-        float32x4_t d1 = vld1q_f32(tables[m+1] + codes[m+1]);
-        float32x4_t d2 = vld1q_f32(tables[m+2] + codes[m+2]);
-        float32x4_t d3 = vld1q_f32(tables[m+3] + codes[m+3]);
-
-        acc = vaddq_f32(acc, vaddq_f32(vaddq_f32(d0, d1), vaddq_f32(d2, d3)));
+        float vals[4] = {
+            tables[m  ][codes[m  ]],
+            tables[m+1][codes[m+1]],
+            tables[m+2][codes[m+2]],
+            tables[m+3][codes[m+3]],
+        };
+        acc = vaddq_f32(acc, vld1q_f32(vals));
     }
 
     float result = vaddvq_f32(acc);
@@ -149,7 +148,7 @@ struct Cluster {
     size_t      mmap_size;   // current mapping size in bytes
 
     Cluster() : vectors(nullptr), vec_sum(nullptr), norms(nullptr), ids(nullptr),
-                size(0), capacity(0), mmap_size(0) {}
+                size(0), capacity(0), mmap_size(0), mmap_path() {}
 
     Cluster(Cluster&& other) noexcept
         : vectors(other.vectors), vec_sum(other.vec_sum), norms(other.norms), ids(other.ids),
