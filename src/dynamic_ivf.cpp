@@ -268,7 +268,8 @@ struct Cluster {
         if (!path.empty()) {
             mmap_path = path;
             _mmap_open(64, dim, truncate_new);   // initial capacity 64 vectors
-            ids = (int*)malloc((size_t)capacity * sizeof(int));
+            ids   = (int*)malloc((size_t)capacity * sizeof(int));
+            norms = (float*)malloc((size_t)capacity * sizeof(float));
         }
         // Heap mode: vectors and ids allocated lazily on first add_vector
     }
@@ -336,11 +337,20 @@ struct PQCodebook {
         Ks = Ks_;
         d_sub = d_ / M_;
 
+        if (d_sub * M != d_) {
+            fprintf(stderr, "ERROR: PQ dimension mismatch: d=%d, M=%d, d_sub=%d\n", d_, M, d_sub);
+            throw std::runtime_error("PQ dimension must be evenly divisible by M");
+        }
+
         centroids = (float**)malloc(M * sizeof(float*));
         precomputed_tables = (float**)malloc(M * sizeof(float*));
         for (int m = 0; m < M; m++) {
             centroids[m] = (float*)aligned_alloc(32, Ks * d_sub * sizeof(float));
             precomputed_tables[m] = (float*)aligned_alloc(32, 256 * Ks * sizeof(float));
+            if (!centroids[m] || !precomputed_tables[m]) {
+                fprintf(stderr, "ERROR: PQ aligned_alloc failed for m=%d\n", m);
+                throw std::bad_alloc();
+            }
             std::memset(centroids[m], 0, Ks * d_sub * sizeof(float));
             std::memset(precomputed_tables[m], 0, 256 * Ks * sizeof(float));
         }
