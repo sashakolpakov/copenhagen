@@ -1496,17 +1496,9 @@ public:
             pq_codebook.train(ptr, (int)n, dim);
         }
 
-        fprintf(stderr, "  [DBG] starting add loop n=%d use_pq=%d pq_m=%d\n", (int)n, (int)use_pq, pq_m);
-        fflush(stderr);
         for (ssize_t i = 0; i < n; i++) {
-            if (i == 0 || i == 1 || i == n-1)  {
-                fprintf(stderr, "  [DBG] add_vector_no_centroid_update i=%d\n", (int)i);
-                fflush(stderr);
-            }
             add_vector_no_centroid_update(ptr + i * dim);
         }
-        fprintf(stderr, "  [DBG] add loop done\n");
-        fflush(stderr);
     }
 
     // -----------------------------------------------------------------------

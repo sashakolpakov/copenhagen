@@ -528,12 +528,10 @@ def main():
         try:
             fn()
             passed.append(name)
-            sys.stderr.write(f"[PASS] {name}\n")
-            sys.stderr.flush()
+            print(f"[PASS] {name}")
         except Exception:
             failed.append(name)
-            sys.stderr.write(f"[FAIL] {name}\n")
-            sys.stderr.flush()
+            print(f"[FAIL] {name}")
             traceback.print_exc()
 
     print(f"\n{len(passed)}/{len(passed)+len(failed)} passed")
