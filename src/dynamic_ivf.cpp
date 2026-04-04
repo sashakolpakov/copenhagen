@@ -338,7 +338,7 @@ struct PQCodebook {
         d_sub = d_ / M_;
 
         if (d_sub * M_ != d_) {
-            fprintf(stderr, "ERROR: PQ dimension mismatch: d=%d, M=%d, d_sub=%d\n", d_, M, d_sub);
+            fprintf(stderr, "ERROR: PQ dimension mismatch: d=%d, M=%d, d_sub=%d\n", d_, M_, d_sub);
             throw std::runtime_error("PQ dimension must be evenly divisible by M");
         }
 
