@@ -121,39 +121,21 @@ idx2 = CopenhagenIndex.load("my_index/")
 
 ## Benchmark results
 
-### Insert throughput vs FAISS rebuild (stable distribution)
+Full results with tables and run instructions: **[BENCHMARKS.md](BENCHMARKS.md)**
 
-| Benchmark              | Copenhagen | FAISS rebuild  | Speedup |
-|------------------------|------------|----------------|---------|
-| SIFT 50k + 50k inserts | 0.05 s     | 0.32 s         | 7.2x    |
-| MNIST 50k + 10k inserts| 0.02 s     | 0.36 s         | 15.5x   |
-| Delete 2000 vectors    | 0.006 s    | 0.088 s        | 14.7x   |
-| Recall@10 (SIFT)       | 0.988      | 0.988          | parity  |
+Headline numbers:
 
-### Soft assignments — recall vs storage (dim=64, 16 clusters, nprobe=4, 2400 vectors)
+- **Streaming churn (30% delete/round, n=50k, 10 rounds)**: CPH holds 0.93–0.95
+  recall@10 while HNSW+filter collapses to 0.46 and FAISS IVF+filter to 0.66.
+  HNSW+rebuild and IVF+rebuild restore recall each round but cost 10–20k and
+  100–200k effective inserts/s respectively; CPH runs at 1M+ inserts/s and
+  1M+ deletes/s throughout.
 
-| soft_k | recall@10 | insert (ms) | storage overhead |
-|--------|-----------|-------------|-----------------|
-| 1      | 0.652     | 0.93        | 1.00x           |
-| 2      | 0.859     | 0.92        | 2.00x           |
-| 3      | 0.940     | 1.40        | 3.00x           |
+- **Distribution drift (MNIST → Fashion-MNIST, 784d)**: CPH soft_k=2 matches
+  FAISS full-rebuild recall (0.99) at 3.6× faster insert (45 ms vs 164 ms).
 
-soft_k=2 gives +20 pp recall at zero insert latency cost.
-
-### MNIST → Fashion drift scenario
-
-**soft_k=2 matches FAISS full-rebuild recall (0.989) at 3.6x faster insert time
-(45 ms vs 164 ms).**
-
-### Tombstone delete (dim=64, 16 clusters, 1200 vectors)
-
-| n_delete | time per delete | leaked results |
-|----------|----------------|----------------|
-| 10       | 1.1 µs         | 0              |
-| 100      | 0.7 µs         | 0              |
-| 500      | 0.6 µs         | 0              |
-
-**30x faster than FAISS rebuild. Zero false positives.**
+- **Tombstone delete**: 0.6–1.1 µs per delete, zero leaked results.
+  FAISS IVF has no native delete; equivalent via rebuild costs ~88 ms.
 
 ---
 

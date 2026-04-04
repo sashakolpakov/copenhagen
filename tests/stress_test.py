@@ -305,6 +305,203 @@ def search_with_various_k():
         assert len(ids) == len(set(ids)), f"Duplicates for k={k}"
 
 
+@_register
+def save_load_preserves_state():
+    """Save/load roundtrip must preserve vectors, deleted IDs, and search results."""
+    import tempfile
+    idx, data, rng = _small_index(n=500, d=32, n_clusters=16, soft_k=2)
+
+    to_delete = list(range(0, 50))
+    for gid in to_delete:
+        idx.delete(gid)
+
+    qs = rng.standard_normal((10, 32)).astype('float32')
+    orig_results = [idx.search(q, k=10) for q in qs]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        idx.save(tmpdir)
+        idx2 = CopenhagenIndex.load(tmpdir)
+
+    assert idx2.n_vectors == idx.n_vectors, "n_vectors mismatch after load"
+    assert idx2.get_stats()["deleted_count"] == len(to_delete), \
+        "deleted_count mismatch after load"
+
+    for i, q in enumerate(qs):
+        ids2, _ = idx2.search(q, k=10)
+        assert not (set(ids2) & set(to_delete)), \
+            f"Deleted ID returned after load: {set(ids2) & set(to_delete)}"
+        assert set(orig_results[i][0]) == set(ids2), \
+            f"Search results differ after load for query {i}"
+
+
+@_register
+def brute_force_matches_exact():
+    """brute_force_search must return the true nearest neighbour."""
+    rng = np.random.default_rng(99)
+    d = 32
+    data = rng.standard_normal((300, d)).astype('float32')
+    idx = CopenhagenIndex(dim=d, n_clusters=16, nprobe=16)
+    idx.add(data)
+
+    for qi in range(10):
+        q = data[qi]
+        bf_ids, _ = idx.brute_force_search(q, k=1)
+        assert bf_ids[0] == qi, \
+            f"brute_force_search: expected self ({qi}) as NN, got {bf_ids[0]}"
+
+
+@_register
+def adaptive_split_fires():
+    """Inserting OOD data must increase n_clusters via adaptive splitting."""
+    rng = np.random.default_rng(11)
+    d = 32
+    idx = CopenhagenIndex(dim=d, n_clusters=4, nprobe=4)
+    idx._index.split_threshold = 2.0
+    idx.add(rng.standard_normal((200, d)).astype('float32'))
+    clusters_before = idx.get_stats()["n_clusters"]
+
+    # OOD batch far from training distribution — forces imbalance
+    ood = (rng.standard_normal((400, d)) + 50.0).astype('float32')
+    idx.add(ood)
+    clusters_after = idx.get_stats()["n_clusters"]
+
+    assert clusters_after > clusters_before, \
+        f"Expected splits to fire: clusters {clusters_before} → {clusters_after}"
+
+
+@_register
+def compact_evicts_physically():
+    """After compact(), deleted_count is 0 and deleted IDs never appear in search."""
+    idx, data, rng = _small_index(n=1000, d=32, n_clusters=16)
+
+    to_delete = list(range(0, 400))
+    for gid in to_delete:
+        idx.delete(gid)
+
+    idx.compact()
+    assert idx.get_stats()["deleted_count"] == 0, \
+        "deleted_count not 0 after compact()"
+
+    qs = rng.standard_normal((20, 32)).astype('float32')
+    for q in qs:
+        ids, _ = idx.search(q, k=10, n_probes=16)
+        leaked = set(ids) & set(to_delete)
+        assert not leaked, f"Deleted IDs returned after compact: {leaked}"
+
+
+@_register
+def pq_mode_recall():
+    """use_pq=True must achieve reasonable recall and return no deleted IDs."""
+    rng = np.random.default_rng(55)
+    d = 64
+    data = rng.standard_normal((1000, d)).astype('float32')
+    idx = CopenhagenIndex(dim=d, n_clusters=16, nprobe=8, use_pq=True, pq_m=8)
+    idx.add(data)
+
+    # Delete some vectors; they must not appear in results
+    to_delete = list(range(0, 50))
+    for gid in to_delete:
+        idx.delete(gid)
+
+    qs = rng.standard_normal((20, d)).astype('float32')
+    gt = _brute_knn(data[50:], qs, 10)  # ground truth over live vectors only
+
+    found_ids = []
+    for q in qs:
+        ids, _ = idx.search(q, k=10)
+        assert not (set(ids) & set(to_delete)), \
+            f"PQ: deleted ID in results: {set(ids) & set(to_delete)}"
+        found_ids.append(ids)
+
+    # Remap gt to global IDs (gt is relative to data[50:])
+    gt_global = gt + 50
+    rec = _recall(gt_global, found_ids, 10)
+    assert rec >= 0.40, f"PQ recall@10 = {rec:.3f} < 0.40"
+
+
+@_register
+def soft_k3_no_duplicates():
+    """soft_k=3: search must return no duplicate IDs under any query."""
+    idx, _, rng = _small_index(n=2000, d=32, n_clusters=16, soft_k=3)
+    qs = rng.standard_normal((20, 32)).astype('float32')
+    for q in qs:
+        ids, _ = idx.search(q, k=20)
+        assert len(ids) == len(set(ids)), f"soft_k=3: duplicate IDs: {ids}"
+
+
+@_register
+def mmap_correctness():
+    """mmap mode: insert, delete, search, and save/load must all be correct."""
+    import tempfile
+    rng = np.random.default_rng(77)
+    d = 32
+
+    with tempfile.TemporaryDirectory() as mmap_dir:
+        idx = CopenhagenIndex(dim=d, n_clusters=8, nprobe=8, soft_k=2,
+                              use_mmap=True, mmap_dir=mmap_dir)
+        data = rng.standard_normal((500, d)).astype('float32')
+        idx.add(data)
+
+        to_delete = list(range(0, 100))
+        for gid in to_delete:
+            idx.delete(gid)
+
+        # trigger splits
+        idx._index.split_threshold = 2.0
+        ood = (rng.standard_normal((300, d)) + 30.0).astype('float32')
+        idx.add(ood)
+
+        qs = rng.standard_normal((10, d)).astype('float32')
+        for q in qs:
+            ids, _ = idx.search(q, k=10)
+            assert not (set(ids) & set(to_delete)), "mmap: deleted ID in results"
+            assert len(ids) == len(set(ids)), "mmap: duplicate IDs"
+
+        # save / load roundtrip
+        with tempfile.TemporaryDirectory() as save_dir:
+            idx.save(save_dir)
+            idx2 = CopenhagenIndex.load(save_dir)
+
+        assert idx2.n_vectors == idx.n_vectors, "mmap load: n_vectors mismatch"
+        assert idx2.get_stats()["deleted_count"] == idx.get_stats()["deleted_count"]
+        for q in qs:
+            ids2, _ = idx2.search(q, k=10)
+            assert not (set(ids2) & set(to_delete)), "mmap load: deleted ID in results"
+
+
+@_register
+def split_with_tombstones_soft_k():
+    """Split triggered while cluster has tombstones and soft_k=2.
+    Centroids must be computed from live vectors only; search must return
+    no deleted IDs and no duplicates."""
+    rng = np.random.default_rng(7)
+    d, n_clusters = 32, 4
+    # Small cluster count forces imbalance quickly
+    idx = CopenhagenIndex(dim=d, n_clusters=n_clusters, nprobe=n_clusters, soft_k=2)
+    idx._index.split_threshold = 2.0  # split aggressively
+
+    # Initial batch
+    data = rng.standard_normal((200, d)).astype('float32')
+    idx.add(data)
+
+    # Delete 40% of the initial vectors (high tombstone load)
+    to_delete = list(range(0, 200, 2))  # every other vector
+    for gid in to_delete:
+        idx.delete(gid)
+    deleted_set = set(to_delete)
+
+    # OOD batch in a far-away region — forces cluster imbalance and triggers splits
+    ood = rng.standard_normal((300, d)).astype('float32') + 20.0
+    idx.add(ood)
+
+    # All results must be live and duplicate-free
+    qs = rng.standard_normal((20, d)).astype('float32')
+    for q in qs:
+        ids, _ = idx.search(q, k=10, n_probes=n_clusters)
+        assert not (set(ids) & deleted_set), f"Deleted ID returned after split+tombstone: {set(ids) & deleted_set}"
+        assert len(ids) == len(set(ids)), f"Duplicate IDs after split+tombstone: {ids}"
+
+
 # ── runner ───────────────────────────────────────────────────────────────────
 
 def main():

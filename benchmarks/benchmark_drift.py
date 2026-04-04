@@ -31,10 +31,12 @@ Run (full data, ~15 min):
 """
 
 import sys, os, time, json, argparse
+from pathlib import Path
 import numpy as np
 import h5py
 
-sys.path.insert(0, '/Users/sasha/copenhagen')
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
 from python.core import DynamicIVF
 
 try:
@@ -52,8 +54,9 @@ except ImportError:
     print("WARNING: ampi not installed — AMPI row skipped")
     print("  To enable: pip install git+https://github.com/sashakolpakov/ampi")
 
-MNIST_PATH   = '/Users/sasha/copenhagen/data/MNIST/mnist-784-euclidean.hdf5'
-FASHION_PATH = '/Users/sasha/copenhagen/data/fashion-mnist/fashion-mnist-784-euclidean.hdf5'
+_DATA_DIR    = _REPO_ROOT / "data"
+MNIST_PATH   = _DATA_DIR / "MNIST"   / "mnist-784-euclidean.hdf5"
+FASHION_PATH = _DATA_DIR / "fashion-mnist" / "fashion-mnist-784-euclidean.hdf5"
 
 
 # ── Data ──────────────────────────────────────────────────────────────────────
@@ -248,6 +251,11 @@ def main():
 
     print("Copenhagen — MNIST → Fashion-MNIST Distribution Drift")
     print("=" * 62)
+
+    # Download datasets if missing
+    sys.path.insert(0, str(Path(__file__).parent))
+    from download_data import ensure_datasets
+    ensure_datasets(["mnist", "fashion"])
 
     mt, mq, ft, fq = load(quick=not args.full)
     print(f"  MNIST   train={len(mt):>6,}  queries={len(mq):>4,}")

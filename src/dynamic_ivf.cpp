@@ -38,6 +38,15 @@
 #include <cstdlib>
 #include <ctime>
 #include <unordered_set>
+#include <string>
+#include <stdexcept>
+
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #ifdef USE_ACCELERATE
 #include <Accelerate/Accelerate.h>
@@ -128,83 +137,154 @@ static inline float simd_pq_distance(const float** tables, const uint8_t* codes,
 namespace py = pybind11;
 
 struct Cluster {
-    float* vectors;
-    float* vec_sum;
-    int* ids;
-    int size;
-    int capacity;
+    float*      vectors;
+    float*      vec_sum;
+    int*        ids;
+    int         size;
+    int         capacity;
 
-    Cluster() : vectors(nullptr), vec_sum(nullptr), ids(nullptr), size(0), capacity(0) {}
+    // mmap state — empty path means heap mode
+    std::string mmap_path;
+    size_t      mmap_size;   // current mapping size in bytes
 
-    // Move constructor: transfer ownership, null out source so its destructor is a no-op
+    Cluster() : vectors(nullptr), vec_sum(nullptr), ids(nullptr),
+                size(0), capacity(0), mmap_size(0) {}
+
     Cluster(Cluster&& other) noexcept
         : vectors(other.vectors), vec_sum(other.vec_sum), ids(other.ids),
-          size(other.size), capacity(other.capacity) {
-        other.vectors  = nullptr;
-        other.vec_sum  = nullptr;
-        other.ids      = nullptr;
-        other.size     = 0;
-        other.capacity = 0;
+          size(other.size), capacity(other.capacity),
+          mmap_path(std::move(other.mmap_path)), mmap_size(other.mmap_size) {
+        other.vectors   = nullptr;
+        other.vec_sum   = nullptr;
+        other.ids       = nullptr;
+        other.size      = 0;
+        other.capacity  = 0;
+        other.mmap_size = 0;
     }
 
     Cluster& operator=(Cluster&& other) noexcept {
         if (this != &other) {
-            if (vectors)  free(vectors);
-            if (vec_sum)  free(vec_sum);
-            if (ids)      free(ids);
-            vectors  = other.vectors;  other.vectors  = nullptr;
-            vec_sum  = other.vec_sum;  other.vec_sum  = nullptr;
-            ids      = other.ids;      other.ids      = nullptr;
-            size     = other.size;     other.size     = 0;
-            capacity = other.capacity; other.capacity = 0;
+            _free_vectors();
+            if (vec_sum) free(vec_sum);
+            if (ids)     free(ids);
+            vectors    = other.vectors;  other.vectors   = nullptr;
+            vec_sum    = other.vec_sum;  other.vec_sum   = nullptr;
+            ids        = other.ids;      other.ids       = nullptr;
+            size       = other.size;     other.size      = 0;
+            capacity   = other.capacity; other.capacity  = 0;
+            mmap_path  = std::move(other.mmap_path);
+            mmap_size  = other.mmap_size; other.mmap_size = 0;
         }
         return *this;
     }
 
-    // Disable copy to prevent accidental double-free
     Cluster(const Cluster&) = delete;
     Cluster& operator=(const Cluster&) = delete;
 
     ~Cluster() {
-        if (vectors) free(vectors);
+        _free_vectors();
         if (vec_sum) free(vec_sum);
-        if (ids) free(ids);
+        if (ids)     free(ids);
     }
 
-    void init(int dim) {
+    bool is_mmap() const { return !mmap_path.empty(); }
+
+    // Free (or unmap) the vectors buffer.
+    void _free_vectors() {
+        if (!vectors) return;
+#if !defined(_WIN32)
+        if (is_mmap()) { munmap(vectors, mmap_size); }
+        else
+#endif
+        { free(vectors); }
+        vectors = nullptr;
+    }
+
+    // Open / create the cluster's .bin file, map `cap` vectors, close fd.
+    // If the file already exists and is larger than cap*dim*4, the existing
+    // size is preserved (safe for load — capacity is derived from file size).
+    void _mmap_open(int cap, int dim) {
+#if !defined(_WIN32)
+        size_t want = (size_t)cap * dim * sizeof(float);
+        int fd = open(mmap_path.c_str(), O_CREAT | O_RDWR, 0600);
+        if (fd < 0)
+            throw std::runtime_error("mmap open failed: " + mmap_path);
+        struct stat st;
+        fstat(fd, &st);
+        size_t sz = ((size_t)st.st_size >= want) ? (size_t)st.st_size : want;
+        if ((size_t)st.st_size < sz && ftruncate(fd, (off_t)sz) < 0) {
+            close(fd);
+            throw std::runtime_error("mmap ftruncate failed: " + mmap_path);
+        }
+        void* addr = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);   // fd-after-close: mapping survives on POSIX
+        if (addr == MAP_FAILED)
+            throw std::runtime_error("mmap failed: " + mmap_path);
+        vectors   = static_cast<float*>(addr);
+        mmap_size = sz;
+        capacity  = (int)(sz / ((size_t)dim * sizeof(float)));
+#else
+        (void)cap; (void)dim;
+        throw std::runtime_error("mmap not supported on Windows");
+#endif
+    }
+
+    // Grow the mapping to new_cap vectors (munmap → ftruncate → mmap).
+    void _mmap_grow(int new_cap, int dim) {
+#if !defined(_WIN32)
+        size_t new_sz = (size_t)new_cap * dim * sizeof(float);
+        munmap(vectors, mmap_size);
+        vectors = nullptr;
+        int fd = open(mmap_path.c_str(), O_RDWR);
+        if (fd < 0)
+            throw std::runtime_error("mmap grow open failed: " + mmap_path);
+        if (ftruncate(fd, (off_t)new_sz) < 0) {
+            close(fd);
+            throw std::runtime_error("mmap grow ftruncate failed: " + mmap_path);
+        }
+        void* addr = mmap(nullptr, new_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
+        if (addr == MAP_FAILED)
+            throw std::runtime_error("mmap grow remap failed: " + mmap_path);
+        vectors   = static_cast<float*>(addr);
+        mmap_size = new_sz;
+        capacity  = new_cap;
+#else
+        (void)new_cap; (void)dim;
+#endif
+    }
+
+    // Initialise a cluster. If path is non-empty, use mmap-backed storage.
+    void init(int dim, const std::string& path = "") {
         vec_sum = (float*)aligned_alloc(32, dim * sizeof(float));
         std::memset(vec_sum, 0, dim * sizeof(float));
-    }
-
-    void reserve(int cap, int dim) {
-        if (cap > capacity) {
-            if (vectors) free(vectors);
-            if (ids) free(ids);
-            vectors = (float*)aligned_alloc(32, cap * dim * sizeof(float));
-            ids = (int*)malloc(cap * sizeof(int));
-            capacity = cap;
+        if (!path.empty()) {
+            mmap_path = path;
+            _mmap_open(64, dim);          // initial capacity 64 vectors
+            ids = (int*)malloc((size_t)capacity * sizeof(int));
         }
+        // Heap mode: vectors and ids allocated lazily on first add_vector
     }
 
     void add_vector(const float* vec, int dim, int id) {
         if (size >= capacity) {
-            capacity = capacity == 0 ? 64 : capacity * 2;
-            float* new_vecs = (float*)aligned_alloc(32, capacity * dim * sizeof(float));
-            int* new_ids = (int*)malloc(capacity * sizeof(int));
-            if (vectors) {
-                std::memcpy(new_vecs, vectors, size * dim * sizeof(float));
-                std::memcpy(new_ids, ids, size * sizeof(int));
-                free(vectors);
-                free(ids);
+            int new_cap = capacity == 0 ? 64 : capacity * 2;
+            if (is_mmap()) {
+                _mmap_grow(new_cap, dim);
+                ids = (int*)realloc(ids, (size_t)new_cap * sizeof(int));
+            } else {
+                float* nv = (float*)aligned_alloc(32, (size_t)new_cap * dim * sizeof(float));
+                int*   ni = (int*)malloc((size_t)new_cap * sizeof(int));
+                if (vectors) { std::memcpy(nv, vectors, (size_t)size * dim * sizeof(float)); free(vectors); }
+                if (ids)     { std::memcpy(ni, ids,     (size_t)size * sizeof(int));          free(ids); }
+                vectors  = nv;
+                ids      = ni;
+                capacity = new_cap;
             }
-            vectors = new_vecs;
-            ids = new_ids;
         }
         std::memcpy(vectors + size * dim, vec, dim * sizeof(float));
         ids[size] = id;
-        for (int i = 0; i < dim; i++) {
-            vec_sum[i] += vec[i];
-        }
+        for (int i = 0; i < dim; i++) vec_sum[i] += vec[i];
         size++;
     }
 };
@@ -555,6 +635,8 @@ public:
     int use_pq;
     int pq_m;
     int pq_ks;
+    bool        use_mmap;
+    std::string mmap_dir;
     int soft_k;           // number of clusters each vector is indexed in (1 = standard)
     float split_threshold; // split cluster when size > mean * split_threshold
     int max_split_iters;  // mini k-means iterations for cluster splitting
@@ -587,9 +669,11 @@ public:
     std::mt19937 rng;
 
     DynamicIVF(int dim, int n_clusters, int nprobe = 1, int use_pq = 0,
-               int pq_m = 8, int pq_ks = 256, int soft_k = 1)
+               int pq_m = 8, int pq_ks = 256, int soft_k = 1,
+               bool use_mmap = false, const std::string& mmap_dir = "")
         : dim(dim), n_clusters(n_clusters), nprobe(nprobe), use_pq(use_pq),
           pq_m(pq_m), pq_ks(pq_ks), soft_k(soft_k),
+          use_mmap(use_mmap), mmap_dir(mmap_dir),
           split_threshold(3.0f), max_split_iters(10) {
 
         rng.seed(42);
@@ -608,8 +692,11 @@ public:
         cluster_live_count.resize(n_clusters, 0);
         id_to_location.resize(1000000);
 
-        for (auto& c : clusters) {
-            c.init(dim);
+        for (int c = 0; c < n_clusters; c++) {
+            std::string path = use_mmap
+                ? mmap_dir + "/cluster_" + std::to_string(c) + ".bin"
+                : std::string();
+            clusters[c].init(dim, path);
         }
 
         if (use_pq) {
@@ -864,11 +951,20 @@ public:
         std::memcpy(old_ids.data(), clusters[cluster_id].ids,
                     old_size * sizeof(int));
 
-        // Mini k-means (k=2) on the cluster's vectors
-        std::uniform_int_distribution<int> dist_rng(0, old_size - 1);
-        int seed_a = dist_rng(rng);
-        int seed_b = dist_rng(rng);
-        while (seed_b == seed_a && old_size > 1) seed_b = dist_rng(rng);
+        // Collect live indices — tombstoned vectors must not influence centroid placement
+        std::vector<int> live_idx;
+        live_idx.reserve(old_size);
+        for (int i = 0; i < old_size; i++)
+            if (!deleted_ids.count(old_ids[i]))
+                live_idx.push_back(i);
+        if ((int)live_idx.size() < 2) return;
+
+        // Mini k-means (k=2) seeded from live vectors only
+        std::uniform_int_distribution<int> dist_rng(0, (int)live_idx.size() - 1);
+        int seed_a = live_idx[dist_rng(rng)];
+        int seed_b = live_idx[dist_rng(rng)];
+        while (seed_b == seed_a && (int)live_idx.size() > 1)
+            seed_b = live_idx[dist_rng(rng)];
 
         std::vector<float> c0(dim), c1(dim);
         std::memcpy(c0.data(), old_vecs.data() + seed_a * dim, dim * sizeof(float));
@@ -878,7 +974,7 @@ public:
         for (int iter = 0; iter < max_split_iters; iter++) {
             std::vector<float> sum0(dim, 0.f), sum1(dim, 0.f);
             int cnt0 = 0, cnt1 = 0;
-            for (int i = 0; i < old_size; i++) {
+            for (int i : live_idx) {
                 float d0 = 0, d1 = 0;
                 const float* v = old_vecs.data() + i * dim;
                 for (int d = 0; d < dim; d++) {
@@ -908,7 +1004,12 @@ public:
 
         // Grow cluster structures (emplace_back may realloc — old refs are gone, saved above)
         clusters.emplace_back();
-        clusters.back().init(dim);
+        {
+            std::string path = use_mmap
+                ? mmap_dir + "/cluster_" + std::to_string(new_cluster_id) + ".bin"
+                : std::string();
+            clusters.back().init(dim, path);
+        }
         pq_clusters.emplace_back();
         if (use_pq) pq_clusters.back().set_m(pq_m);
         cluster_live_count.push_back(0);   // new cluster starts with 0 live vectors
@@ -1491,28 +1592,48 @@ public:
         clusters.resize(nc);
         pq_clusters.resize(nc);
         cluster_live_count.resize(nc, 0);
-        for (int c = old_nc; c < nc; c++)
-            clusters[c].init(dim);
+        for (int c = old_nc; c < nc; c++) {
+            std::string path = use_mmap
+                ? mmap_dir + "/cluster_" + std::to_string(c) + ".bin"
+                : std::string();
+            clusters[c].init(dim, path);
+        }
     }
 
+    // Heap-mode restore: load vectors + ids from numpy arrays (non-mmap load path).
     void restore_cluster(int c, py::array_t<float> vecs, py::array_t<int> ids_arr) {
         auto vbuf = vecs.request();
         auto ibuf = ids_arr.request();
         int sz = (int)vbuf.shape[0];
         Cluster& cl = clusters[c];
-        if (cl.vectors) { free(cl.vectors); cl.vectors = nullptr; }
-        if (cl.ids)     { free(cl.ids);     cl.ids     = nullptr; }
+        cl._free_vectors();
+        if (cl.ids) { free(cl.ids); cl.ids = nullptr; }
         cl.size     = sz;
         cl.capacity = sz;
         if (sz > 0) {
             cl.vectors = (float*)aligned_alloc(32, (size_t)sz * dim * sizeof(float));
-            cl.ids     = (int*)malloc(sz * sizeof(int));
+            cl.ids     = (int*)malloc((size_t)sz * sizeof(int));
             std::memcpy(cl.vectors, vbuf.ptr, (size_t)sz * dim * sizeof(float));
-            std::memcpy(cl.ids,     ibuf.ptr, sz * sizeof(int));
+            std::memcpy(cl.ids,     ibuf.ptr, (size_t)sz * sizeof(int));
         }
         std::memset(cl.vec_sum, 0, dim * sizeof(float));
-        // live count: all restored vectors are alive; tombstones are in deleted_ids
-        // restore_state() will correct this count after the tombstone set is loaded
+        if (c < (int)cluster_live_count.size())
+            cluster_live_count[c] = sz;
+    }
+
+    // mmap-mode restore: vectors live in cluster_c.bin (already mmap'd from
+    // constructor); just load the IDs from the numpy array and set size.
+    void restore_cluster_mmap(int c, py::array_t<int> ids_arr) {
+        auto ibuf = ids_arr.request();
+        int sz = (int)ibuf.shape[0];
+        Cluster& cl = clusters[c];
+        if (cl.ids) { free(cl.ids); cl.ids = nullptr; }
+        int alloc = std::max(sz, cl.capacity);  // at least as many as capacity
+        cl.ids  = (int*)malloc((size_t)alloc * sizeof(int));
+        if (sz > 0)
+            std::memcpy(cl.ids, ibuf.ptr, (size_t)sz * sizeof(int));
+        cl.size = sz;
+        std::memset(cl.vec_sum, 0, dim * sizeof(float));
         if (c < (int)cluster_live_count.size())
             cluster_live_count[c] = sz;
     }
@@ -1571,14 +1692,16 @@ PYBIND11_MODULE(copenhagen, m) {
     m.doc() = "Copenhagen - A Quantum-Inspired Dynamic IVF Index";
 
     py::class_<DynamicIVF>(m, "DynamicIVF")
-        .def(py::init<int, int, int, int, int, int, int>(),
+        .def(py::init<int, int, int, int, int, int, int, bool, const std::string&>(),
              py::arg("dim"),
              py::arg("n_clusters"),
-             py::arg("nprobe") = 1,
-             py::arg("use_pq") = 0,
-             py::arg("pq_m") = 8,
-             py::arg("pq_ks") = 256,
-             py::arg("soft_k") = 1)
+             py::arg("nprobe")   = 1,
+             py::arg("use_pq")   = 0,
+             py::arg("pq_m")     = 8,
+             py::arg("pq_ks")    = 256,
+             py::arg("soft_k")   = 1,
+             py::arg("use_mmap") = false,
+             py::arg("mmap_dir") = "")
         .def("train",          &DynamicIVF::train,          py::arg("data"))
         .def("insert",         &DynamicIVF::insert_vector,  py::arg("vector"))
         .def("insert_batch",   &DynamicIVF::insert_batch,   py::arg("data"))
@@ -1600,8 +1723,11 @@ PYBIND11_MODULE(copenhagen, m) {
         .def("get_id_to_location",    &DynamicIVF::get_id_to_location_cpp)
         .def("set_centroids",         &DynamicIVF::set_centroids,         py::arg("centroids"))
         .def("restore_cluster",       &DynamicIVF::restore_cluster,       py::arg("cluster_id"), py::arg("vectors"), py::arg("ids"))
+        .def("restore_cluster_mmap",  &DynamicIVF::restore_cluster_mmap,  py::arg("cluster_id"), py::arg("ids"))
         .def("restore_state",         &DynamicIVF::restore_state,         py::arg("deleted_ids"), py::arg("id_to_location"), py::arg("n_vectors"))
         .def_readwrite("split_threshold",  &DynamicIVF::split_threshold)
         .def_readwrite("max_split_iters",  &DynamicIVF::max_split_iters)
-        .def_readwrite("soft_k",           &DynamicIVF::soft_k);
+        .def_readwrite("soft_k",           &DynamicIVF::soft_k)
+        .def_readwrite("use_mmap",         &DynamicIVF::use_mmap)
+        .def_readwrite("mmap_dir",         &DynamicIVF::mmap_dir);
 }

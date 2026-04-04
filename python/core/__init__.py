@@ -32,7 +32,8 @@ class CopenhagenIndex:
     only when necessary (measurement/search).
     """
     
-    def __init__(self, dim, n_clusters, nprobe=1, use_pq=False, pq_m=8, pq_ks=256, soft_k=1):
+    def __init__(self, dim, n_clusters, nprobe=1, use_pq=False, pq_m=8, pq_ks=256, soft_k=1,
+                 use_mmap=False, mmap_dir=""):
         """
         Args:
             dim: Dimension of the vectors
@@ -41,13 +42,22 @@ class CopenhagenIndex:
             use_pq: Use Product Quantization for faster search
             pq_m: Number of PQ subspaces (higher = more accurate, slower)
             pq_ks: Number of centroids per subspace (256 = 8 bits)
+            soft_k: Number of clusters each vector is indexed in (1 = standard IVF)
+            use_mmap: Store cluster vectors in memory-mapped files (for large datasets)
+            mmap_dir: Directory for mmap files (required when use_mmap=True)
         """
+        if use_mmap and not mmap_dir:
+            raise ValueError("mmap_dir must be set when use_mmap=True")
         self.dim = dim
         self.n_clusters = n_clusters
         self.nprobe = nprobe
         self.use_pq = use_pq
-        
-        self._index = DynamicIVF(dim, n_clusters, nprobe, 1 if use_pq else 0, pq_m, pq_ks, soft_k)
+
+        if use_mmap:
+            os.makedirs(mmap_dir, exist_ok=True)
+
+        self._index = DynamicIVF(dim, n_clusters, nprobe, 1 if use_pq else 0,
+                                 pq_m, pq_ks, soft_k, use_mmap, mmap_dir)
     
     def add(self, vectors):
         """
@@ -177,20 +187,29 @@ class CopenhagenIndex:
         """
         Save index to a directory.
 
-        Creates:
-          <path>/clusters.npz   — centroids + all cluster vectors/ids in one file
+        Heap mode creates:
+          <path>/clusters.npz   — centroids + all cluster vectors/ids
           <path>/metadata.json  — scalar state, deleted_ids, id_to_location
+
+        mmap mode creates:
+          <mmap_dir>/cluster_N.bin  — vector data (already persisted via MAP_SHARED)
+          <path>/clusters_meta.npz  — centroids + ids only (no vectors)
+          <path>/metadata.json      — scalar state, deleted_ids, id_to_location
         """
         os.makedirs(path, exist_ok=True)
         idx   = self._index
         stats = idx.get_stats()
         nc    = stats["n_clusters"]
+        is_mmap = idx.use_mmap
 
         arrays = {"centroids": idx.get_centroids()}
         for c in range(nc):
-            arrays[f"vecs_{c}"] = idx.get_cluster_vectors(c)
-            arrays[f"ids_{c}"]  = idx.get_cluster_ids(c)
-        np.savez(os.path.join(path, "clusters.npz"), **arrays)
+            if not is_mmap:
+                arrays[f"vecs_{c}"] = idx.get_cluster_vectors(c)
+            arrays[f"ids_{c}"] = idx.get_cluster_ids(c)
+
+        npz_name = "clusters_meta.npz" if is_mmap else "clusters.npz"
+        np.savez(os.path.join(path, npz_name), **arrays)
 
         meta = {
             "dim":            self.dim,
@@ -201,6 +220,8 @@ class CopenhagenIndex:
             "soft_k":         int(idx.soft_k),
             "split_threshold":float(idx.split_threshold),
             "max_split_iters":int(idx.max_split_iters),
+            "use_mmap":       is_mmap,
+            "mmap_dir":       idx.mmap_dir if is_mmap else "",
             "deleted_ids":    idx.get_deleted_ids_list(),
             "id_to_location": [list(map(list, locs)) for locs in idx.get_id_to_location()],
         }
@@ -213,6 +234,9 @@ class CopenhagenIndex:
         with open(os.path.join(path, "metadata.json")) as f:
             meta = json.load(f)
 
+        is_mmap  = meta.get("use_mmap", False)
+        mmap_dir = meta.get("mmap_dir", "")
+
         obj = cls.__new__(cls)
         obj.dim        = meta["dim"]
         obj.n_clusters = meta["n_clusters"]
@@ -224,18 +248,27 @@ class CopenhagenIndex:
             1 if meta["use_pq"] else 0,
             meta.get("pq_m", 8), meta.get("pq_ks", 256),
             meta["soft_k"],
+            is_mmap, mmap_dir,
         )
-        obj._index.split_threshold  = meta["split_threshold"]
-        obj._index.max_split_iters  = meta["max_split_iters"]
+        obj._index.split_threshold = meta["split_threshold"]
+        obj._index.max_split_iters = meta["max_split_iters"]
 
-        npz = np.load(os.path.join(path, "clusters.npz"))
-        obj._index.set_centroids(npz["centroids"])
-
-        for c in range(meta["n_clusters"]):
-            vecs = npz[f"vecs_{c}"]
-            ids  = npz[f"ids_{c}"]
-            if len(ids) > 0:
-                obj._index.restore_cluster(c, vecs, ids)
+        if is_mmap:
+            # Vectors are in cluster_N.bin files (mmap'd by constructor).
+            # Load only centroids + ids from clusters_meta.npz.
+            npz = np.load(os.path.join(path, "clusters_meta.npz"))
+            obj._index.set_centroids(npz["centroids"])
+            for c in range(meta["n_clusters"]):
+                ids = npz[f"ids_{c}"]
+                obj._index.restore_cluster_mmap(c, ids)
+        else:
+            npz = np.load(os.path.join(path, "clusters.npz"))
+            obj._index.set_centroids(npz["centroids"])
+            for c in range(meta["n_clusters"]):
+                vecs = npz[f"vecs_{c}"]
+                ids  = npz[f"ids_{c}"]
+                if len(ids) > 0:
+                    obj._index.restore_cluster(c, vecs, ids)
 
         id2loc = [[tuple(p) for p in locs] for locs in meta["id_to_location"]]
         obj._index.restore_state(meta["deleted_ids"], id2loc, meta["n_vectors"])

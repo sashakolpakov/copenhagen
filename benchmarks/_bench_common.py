@@ -282,22 +282,4 @@ def build_dynamic_ivf_configs(data, queries, gt):
     return configs
 
 
-DATASETS = {
-    "gauss": {"fn": lambda: make_gaussian()},
-    "mnist": {"path": "MNIST/mnist-784-euclidean.hdf5"},
-    "fashion": {"path": "fashion-mnist/fashion-mnist-784-euclidean.hdf5"},
-    "sift": {"path": "sift/sift-128-euclidean.hdf5"},
-}
-
-
-def ensure_datasets(targets, force=False):
-    """Download datasets if needed."""
-    for name in targets:
-        if name == "gauss":
-            continue
-        info = DATASETS.get(name)
-        if info and "path" in info:
-            path = DATA_DIR / info["path"]
-            if not path.exists():
-                print(f"Dataset {name} not found at {path}")
-                print("Download from ANN-benchmarks.com and place in data/")
+from download_data import ensure_datasets, DATASETS  # noqa: F401  re-exported for callers

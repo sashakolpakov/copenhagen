@@ -76,3 +76,124 @@ for d_test, nc in [(128, 32), (256, 64)]:
     print(f"dim={d_test}, n_clusters={nc}: OK")
 
 print("OK")
+
+# ── soft_k=2 basic smoke ──────────────────────────────────────────────────────
+idx_sk = CopenhagenIndex(dim=64, n_clusters=16, nprobe=8, soft_k=2)
+idx_sk.add(rng.standard_normal((500, 64)).astype("float32"))
+ids_sk, _ = idx_sk.search(rng.standard_normal(64).astype("float32"), k=10)
+assert len(ids_sk) == len(set(ids_sk)), "soft_k=2: duplicate IDs in results"
+print("soft_k=2: OK")
+
+# ── search_batch ──────────────────────────────────────────────────────────────
+idx_b = CopenhagenIndex(dim=64, n_clusters=16, nprobe=8)
+idx_b.add(rng.standard_normal((500, 64)).astype("float32"))
+batch_qs = rng.standard_normal((5, 64)).astype("float32")
+all_ids, all_dists = idx_b.search_batch(batch_qs, k=10)
+assert len(all_ids) == 5, f"search_batch: expected 5 id lists, got {len(all_ids)}"
+assert len(all_dists) == 5, f"search_batch: expected 5 dist lists, got {len(all_dists)}"
+for ids_r, dists_r in zip(all_ids, all_dists):
+    assert len(ids_r) == 10
+    assert len(dists_r) == 10
+print("search_batch: OK")
+
+# ── brute_force_search ────────────────────────────────────────────────────────
+bf_data = rng.standard_normal((200, 64)).astype("float32")
+idx_bf = CopenhagenIndex(dim=64, n_clusters=8, nprobe=8)
+idx_bf.add(bf_data)
+q_bf = bf_data[0]
+bf_ids, bf_dists = idx_bf.brute_force_search(q_bf, k=5)
+assert bf_ids[0] == 0, f"brute_force_search: nearest to data[0] should be itself, got {bf_ids[0]}"
+assert len(bf_ids) == 5
+print("brute_force_search: OK")
+
+# ── save / load roundtrip ─────────────────────────────────────────────────────
+import tempfile, os
+save_data = rng.standard_normal((300, 64)).astype("float32")
+idx_save = CopenhagenIndex(dim=64, n_clusters=16, nprobe=8, soft_k=2)
+idx_save.add(save_data)
+idx_save.delete(0)
+idx_save.delete(1)
+with tempfile.TemporaryDirectory() as tmpdir:
+    idx_save.save(tmpdir)
+    assert os.path.exists(os.path.join(tmpdir, "clusters.npz"))
+    assert os.path.exists(os.path.join(tmpdir, "metadata.json"))
+    idx_load = CopenhagenIndex.load(tmpdir)
+assert idx_load.n_vectors == idx_save.n_vectors, "save/load: n_vectors mismatch"
+assert idx_load.get_stats()["deleted_count"] == 2, "save/load: deleted_ids not preserved"
+q_sl = rng.standard_normal(64).astype("float32")
+ids_orig, _ = idx_save.search(q_sl, k=10)
+ids_load, _ = idx_load.search(q_sl, k=10)
+assert 0 not in ids_load and 1 not in ids_load, "save/load: deleted IDs returned after reload"
+print("save/load: OK")
+
+# ── compact ───────────────────────────────────────────────────────────────────
+idx_c = CopenhagenIndex(dim=64, n_clusters=8, nprobe=8)
+idx_c.add(rng.standard_normal((200, 64)).astype("float32"))
+for gid in range(50):
+    idx_c.delete(gid)
+assert idx_c.get_stats()["deleted_count"] == 50
+idx_c.compact()
+assert idx_c.get_stats()["deleted_count"] == 0, "compact: deleted_count not cleared"
+ids_c, _ = idx_c.search(rng.standard_normal(64).astype("float32"), k=10)
+assert not any(i < 50 for i in ids_c), "compact: deleted ID returned after compact"
+print("compact: OK")
+
+# ── get_stats fields ──────────────────────────────────────────────────────────
+idx_gs = CopenhagenIndex(dim=32, n_clusters=8, nprobe=4)
+idx_gs.add(rng.standard_normal((100, 32)).astype("float32"))
+stats = idx_gs.get_stats()
+for field in ("n_vectors", "n_clusters", "deleted_count", "max_cluster_size",
+              "mean_cluster_size", "dim", "soft_k"):
+    assert field in stats, f"get_stats: missing field '{field}'"
+assert stats["n_vectors"] == 100
+assert stats["n_clusters"] == 8
+assert stats["deleted_count"] == 0
+print("get_stats: OK")
+
+# ── __repr__ ──────────────────────────────────────────────────────────────────
+r = repr(idx_gs)
+assert "CopenhagenIndex" in r and "dim=32" in r, f"__repr__ unexpected: {r}"
+print("__repr__: OK")
+
+# ── writable attributes ───────────────────────────────────────────────────────
+idx_wa = CopenhagenIndex(dim=32, n_clusters=8, nprobe=4)
+idx_wa.add(rng.standard_normal((100, 32)).astype("float32"))
+idx_wa._index.split_threshold = 2.0
+idx_wa._index.soft_k = 2
+idx_wa._index.max_split_iters = 5
+assert idx_wa._index.split_threshold == 2.0
+assert idx_wa._index.soft_k == 2
+assert idx_wa._index.max_split_iters == 5
+print("writable attributes: OK")
+
+# ── use_pq=True basic smoke ───────────────────────────────────────────────────
+pq_data = rng.standard_normal((500, 64)).astype("float32")
+idx_pq = CopenhagenIndex(dim=64, n_clusters=16, nprobe=8, use_pq=True, pq_m=8)
+idx_pq.add(pq_data)
+ids_pq, dists_pq = idx_pq.search(pq_data[0], k=10)
+assert len(ids_pq) == 10, f"PQ search: expected 10 results, got {len(ids_pq)}"
+assert 0 in ids_pq, "PQ search: nearest to data[0] should include itself"
+print("use_pq=True: OK")
+
+# ── mmap basic smoke ──────────────────────────────────────────────────────────
+with tempfile.TemporaryDirectory() as mmap_dir:
+    idx_mm = CopenhagenIndex(dim=64, n_clusters=8, nprobe=8, use_mmap=True, mmap_dir=mmap_dir)
+    mmap_data = rng.standard_normal((300, 64)).astype("float32")
+    idx_mm.add(mmap_data)
+    ids_mm, _ = idx_mm.search(mmap_data[0], k=5)
+    assert 0 in ids_mm, "mmap: nearest to data[0] should include itself"
+
+    # save / reload
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as save_dir:
+        idx_mm.save(save_dir)
+        import os as _os
+        assert _os.path.exists(_os.path.join(save_dir, "clusters_meta.npz"))
+        assert not _os.path.exists(_os.path.join(save_dir, "clusters.npz")), \
+            "mmap save should not write clusters.npz"
+        idx_mm2 = CopenhagenIndex.load(save_dir)
+    ids_mm2, _ = idx_mm2.search(mmap_data[0], k=5)
+    assert 0 in ids_mm2, "mmap load: nearest to data[0] should include itself"
+print("mmap: OK")
+
+print("ALL OK")
