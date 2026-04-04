@@ -1,56 +1,33 @@
 # Copenhagen
 
-Copenhagen is a fully dynamic approximate nearest neighbor (ANN) index based on
-Inverted File Index (IVF) that handles continuous inserts and deletes without
-ever rebuilding. Standard ANN indexes (FAISS IVF, HNSW) assume a static or
-slowly-changing dataset; when data drifts — new product SKUs, freshly-published
-articles, continuous message embeddings — their centroids no longer represent
-the full data manifold, clusters grow massively imbalanced, and recall collapses
-for new-data queries. Copenhagen solves this with three complementary mechanisms:
-O(1) tombstone deletion with lazy compaction, soft multi-cluster assignment to
-maintain recall near Voronoi boundaries, and adaptive cluster splitting that adds
-new centroids only where distribution drift has overloaded an existing cell —
-all without an offline rebuild step. The design is inspired by the logarithmic-method
-and deletion-only structures from arXiv:2604.00271 ("Engineering Fully Dynamic
-Convex Hulls", IT University of Copenhagen).
+A fully dynamic approximate nearest neighbor (ANN) index built on Inverted File Index (IVF). Handles continuous inserts and deletes without ever rebuilding.
+
+Standard ANN indexes (FAISS IVF, HNSW) assume a static or slowly-changing dataset. When data drifts — new product SKUs, freshly-published articles, continuous message embeddings — their centroids no longer represent the full data manifold, clusters grow massively imbalanced, and recall collapses for new-data queries. Copenhagen solves this with three mechanisms that compose:
+
+- **O(1) tombstone delete** with lazy compaction at search time
+- **Soft multi-cluster assignment** (`soft_k`) for recall near Voronoi boundaries
+- **Adaptive cluster splitting** — adds new centroids only where drift has overloaded an existing cell, no offline rebuild
+
+The design draws on the logarithmic-method bucket structure and tombstone correctness argument from [arXiv:2604.00271](https://arxiv.org/abs/2604.00271) ("Engineering Fully Dynamic Convex Hulls", IT University of Copenhagen).
 
 ---
 
 ## When to use Copenhagen
 
-Copenhagen is the right tool when **insert throughput matters more than knowing
-why the distribution shifted**.
+**Use Copenhagen when insert throughput and live deletes matter more than explaining why the distribution shifted.**
 
-**E-commerce product catalog** — 10k new SKUs per hour, the recommendation index
-must stay live. At 0.4µs/vector insert, you never go offline to rebuild. FAISS IVF
-requires a full retrain (minutes) to recover recall after a catalog expansion;
-Copenhagen handles it incrementally with adaptive cluster splitting.
+| Scenario | Why Copenhagen |
+|---|---|
+| E-commerce catalog — 10k new SKUs/hour | 0.4 µs/vector insert, never goes offline; adaptive splits recover recall after catalog expansions |
+| News / real-time content index | O(1) tombstone delete (0.3 µs/delete, zero leaked results); FAISS IVF has no native delete primitive |
+| Chat / document embedding cache | `soft_k=2` keeps recall high at Voronoi boundaries; storage overhead is exactly 2× standard IVF |
+| Streaming with gradual drift | Recall stays stable as new-distribution vectors arrive in batches; FAISS degrades monotonically |
 
-**News feed / real-time content index** — articles are indexed as they are published,
-stale content is deleted as it ages out. FAISS IVF has no real delete primitive on
-`IndexIVFFlat` — you need a full rebuild or a lossy `remove_ids` workaround.
-Copenhagen's O(1) tombstone delete compacts lazily at search time: 0.3µs per delete,
-zero leaked results.
-
-**Chat / document embedding cache** — millions of message embeddings accumulate
-continuously. soft_k=2 keeps recall high at Voronoi boundaries without any offline
-step. Storage overhead is exactly 2× vs standard IVF.
-
-**When NOT to use Copenhagen** — if you need to detect *which part* of the
-distribution drifted, or *in what direction*, Copenhagen only tells you a cluster
-grew too large and splits it. For drift geometry and directional signals, prefer
-[AMPI](https://github.com/sashakolpakov/ampi), which tracks each cluster's
-subspace via an Oja sketch and alerts when the drift angle exceeds a threshold.
+**When NOT to use Copenhagen** — if you need to detect *where* or *in what direction* the distribution drifted. Copenhagen only tells you a cluster grew too large and splits it. For directional drift signals, use [AMPI](https://github.com/sashakolpakov/ampi), which tracks per-cluster subspace drift via Oja sketches.
 
 ---
 
 ## Quick start
-
-### Install (pip — pre-built wheel)
-
-```bash
-pip install copenhagen-ann
-```
 
 ### Build from source
 
@@ -58,118 +35,143 @@ pip install copenhagen-ann
 cd src && bash build.sh
 ```
 
-The build requires a C++17 compiler and Apple Accelerate (macOS) or OpenBLAS (Linux).
-The resulting shared library is placed at `python/core/copenhagen.so`.
+Requires C++17 and Apple Accelerate (macOS) or OpenBLAS (Linux). Deposits `copenhagen.so` into `python/core/`.
 
-### Minimal Python example
+### Basic usage
 
 ```python
 import numpy as np
 from python.core import CopenhagenIndex
 
-dim       = 128
-n_clusters = 32
+idx = CopenhagenIndex(dim=128, n_clusters=32, nprobe=4, soft_k=2)
 
-# 1. Create and train the index
-idx    = CopenhagenIndex(dim, n_clusters, nprobe=4, soft_k=2)
-train  = np.random.randn(10_000, dim).astype(np.float32)
-idx._index.train(train)
+# Train + insert in one call — first add() trains on the batch, subsequent adds insert
+train = np.random.randn(10_000, 128).astype(np.float32)
+idx.add(train)
 
-# 2. Insert a batch of vectors
-vecs = np.random.randn(5_000, dim).astype(np.float32)
-idx.add(vecs)                          # insert_batch under the hood
+# Insert more (incremental, no rebuild)
+new_vecs = np.random.randn(5_000, 128).astype(np.float32)
+idx.add(new_vecs)
 
-# 3. Search
-query       = np.random.randn(dim).astype(np.float32)
-ids, dists  = idx.search(query, k=10)
+# Search
+query = np.random.randn(128).astype(np.float32)
+ids, dists = idx.search(query, k=10)
 
-# 4. Delete by ID
-idx.delete(ids[0])                     # O(1) tombstone
+# Delete by ID (O(1) tombstone)
+idx.delete(ids[0])
 
-# 5. Compact (flush all tombstones immediately)
-idx.compact()                          # also auto-triggers at 10 % churn
+# Compact tombstones immediately (also auto-fires at 10% churn)
+idx.compact()
 
-# 6. Save and reload
+# Save / load
 idx.save("my_index/")
 idx2 = CopenhagenIndex.load("my_index/")
 ```
 
----
+### Streaming insert
 
-## Key features
+For large streams that shouldn't be materialised in memory:
 
-- **Soft assignments** — each vector is indexed in its top-`soft_k` nearest
-  clusters, improving recall near Voronoi boundaries without any query-side change.
-- **Adaptive cluster splitting** — when drift causes a cell to exceed
-  `mean_size × split_threshold`, mini k-means (k=2) splits it and adds a new
-  centroid; no full rebuild needed.
-- **O(1) tombstone delete** — `delete_vector` marks an ID in an unordered set;
-  physical eviction happens lazily during search via a single in-place pass.
-- **Auto-compact** — `compact()` is called automatically by `insert_batch` when
-  deleted IDs exceed 10 % of `n_vectors`; call it manually for bulk deletes.
-- **Save / load (.npz)** — `save(path)` writes `clusters.npz` and
-  `metadata.json`; `CopenhagenIndex.load(path)` restores the full index state
-  including tombstones and `id_to_location`.
-- **GPU acceleration** — `CopenhagenIndex(device="cuda"|"mps"|"cpu")` offloads
-  centroid distance computation via `torch.mm`; PyTorch dispatches to cuBLAS,
-  rocBLAS, or Metal MPS transparently. Centroids are pinned once at train time;
-  only argmin indices are transferred back. Install `torch` to enable.
-- **BLAS-accelerated** — all dense distance computation uses `cblas_sgemm`
-  via Apple Accelerate; cluster storage is 32-byte aligned for AVX/NEON
-  cache efficiency.
-- **Correct move semantics** — `Cluster` and `PQCluster` carry explicit move
-  constructors, preventing double-free when `std::vector` reallocates during
-  `emplace_back` on cluster splits.
+```python
+def vector_generator():
+    for chunk in fetch_from_kafka():
+        yield chunk.astype(np.float32)   # shape (dim,) or (n, dim)
 
----
+first_id, last_id = idx.insert_stream(vector_generator(), chunk_size=1000)
+```
 
-## Benchmark results
+### GPU acceleration
 
-Full results with tables and run instructions: **[BENCHMARKS.md](BENCHMARKS.md)**
+```python
+# Offloads centroid distance computation via torch.mm (cuBLAS / Metal MPS)
+idx = CopenhagenIndex(dim=128, n_clusters=32, device="cuda")   # NVIDIA
+idx = CopenhagenIndex(dim=128, n_clusters=32, device="mps")    # Apple M-series
+```
 
-Headline numbers:
-
-- **Streaming churn (30% delete/round, n=50k, 10 rounds)**: CPH holds 0.93–0.95
-  recall@10 while HNSW+filter collapses to 0.46 and FAISS IVF+filter to 0.66.
-  HNSW+rebuild and IVF+rebuild restore recall each round but cost 10–20k and
-  100–200k effective inserts/s respectively; CPH runs at 1M+ inserts/s and
-  1M+ deletes/s throughout.
-
-- **Distribution drift (MNIST → Fashion-MNIST, 784d)**: CPH soft_k=2 matches
-  FAISS full-rebuild recall (0.99) at 3.6× faster insert (45 ms vs 164 ms).
-
-- **Tombstone delete**: 0.6–1.1 µs per delete, zero leaked results.
-  FAISS IVF has no native delete; equivalent via rebuild costs ~88 ms.
+Centroids are pinned on device once at train time; only `(n, soft_k)` argmin indices transfer back per batch. Search stays on CPU (single-query centroid ranking is too small to benefit from device offload).
 
 ---
 
 ## Parameters
 
-| Parameter         | Default | Effect                                                             |
-|-------------------|---------|--------------------------------------------------------------------|
-| `soft_k`          | 1       | Clusters per vector at index time (1 = standard IVF, 2–3 = better recall near boundaries) |
-| `split_threshold` | 3.0     | Split a cluster when its live size exceeds `mean_size × threshold` |
-| `max_split_iters` | 10      | Mini k-means iterations inside `split_cluster`                     |
-| `nprobe`          | 1       | Number of clusters probed per query                                |
+| Parameter | Default | Effect |
+|---|---|---|
+| `n_clusters` | — | Number of IVF clusters (Voronoi cells). Rule of thumb: `sqrt(n_vectors)` |
+| `nprobe` | 1 | Clusters scanned per query. Higher = better recall, slower search |
+| `soft_k` | 1 | Clusters each vector is indexed in. `soft_k=2` matches FAISS rebuild recall on drift benchmarks |
+| `split_threshold` | 3.0 | Split a cluster when `live_size > mean_size × threshold` |
+| `max_split_iters` | 10 | Mini k-means iterations inside `split_cluster` |
+| `use_pq` | False | Product Quantization for compressed storage and faster approximate search |
+| `use_mmap` | False | Memory-map cluster storage for indexes larger than RAM |
 
-`split_threshold` and `soft_k` are writable Python attributes on the index object:
+`split_threshold` and `soft_k` are writable on the index object at any time:
 
 ```python
-idx._index.split_threshold = 2.5
-idx._index.soft_k          = 2
+idx._index.split_threshold = 2.5   # more aggressive splits
+idx._index.soft_k = 2
 ```
 
 ---
 
-## Building from source
+## Monitoring
 
-```bash
-cd src && bash build.sh
+```python
+# Global stats
+stats = idx.get_stats()
+# {'n_vectors': 15000, 'n_clusters': 33, 'deleted_count': 12, ...}
+
+# Per-cluster breakdown
+for cs in idx.get_cluster_stats():
+    print(cs['cluster_id'], cs['live_size'], cs['physical_size'], cs['last_split_round'])
+    # last_split_round = -1 for training-time clusters
+    # last_split_round = N for clusters created by the Nth insert_batch call
 ```
 
-Requirements: C++17, Apple Accelerate (macOS) or OpenBLAS (Linux). The build
-script compiles `dynamic_ivf.cpp` and deposits `copenhagen.so` into
-`python/core/`.
+`get_cluster_stats()` returns a list of dicts with `cluster_id`, `live_size`, `physical_size`, `centroid` (numpy array), and `last_split_round`. Useful for surfacing which clusters are overloaded and which have recently split.
+
+---
+
+## Benchmark results
+
+Full results and run instructions: **[BENCHMARKS.md](BENCHMARKS.md)**
+
+### Distribution drift — MNIST → Fashion-MNIST (784d, quick mode)
+
+Train on MNIST (20k vectors), insert Fashion-MNIST (10k vectors) without retraining. Fashion vectors land in wrong Voronoi cells; clusters bloat 3–4×.
+
+| Method | Fashion recall@10 | MNIST recall@10 | Insert time |
+|---|---|---|---|
+| FAISS IVF add-only | 0.953 | 0.973 | 17 ms |
+| FAISS IVF full rebuild | 0.989 | 0.974 | 102 ms |
+| AMPI (nlist=212, fans=16, probes=16) | **0.997** | 0.974 | 7,557 ms |
+| Copenhagen baseline (soft_k=1, no splits) | 0.962 | 0.980 | 37 ms |
+| Copenhagen best (soft_k=2 + splits) | 0.979 | **0.993** | 104 ms |
+
+Copenhagen best is ~72× faster to insert than AMPI (104 ms vs 7,557 ms) at a cost of 1.8pp recall on Fashion queries. It matches FAISS full rebuild's insert speed while beating it by +2.6pp on fashion recall. AMPI is the right call when drift recall is the primary metric and insert latency is not a constraint.
+
+### Gradual streaming drift (500 vectors/batch × 10 batches)
+
+| Method | Recall at batch 1 | Mid | Final |
+|---|---|---|---|
+| FAISS add-only | 0.946 | 0.977 | 0.980 |
+| Copenhagen baseline | 0.916 | 0.959 | 0.969 |
+| Copenhagen best (soft_k=2 + splits) | **0.972** | **0.986** | **0.987** |
+
+Copenhagen best leads FAISS from the very first batch (+2.6pp) and finishes +0.7pp ahead.
+
+### Streaming churn (30% delete/round, n=50k, 10 rounds)
+
+| Method | Recall@10 | Inserts/s | Deletes/s |
+|---|---|---|---|
+| HNSW + filter | 0.46 | — | — |
+| FAISS IVF + rebuild | 0.95 | ~100–200k | — |
+| Copenhagen | **0.93–0.95** | **1M+** | **1M+** |
+
+Full tables in [BENCHMARKS.md](BENCHMARKS.md).
+
+### Tombstone delete
+
+0.6–1.1 µs per delete, zero leaked results. FAISS IVF has no native delete primitive; equivalent via rebuild costs ~88 ms.
 
 ---
 
@@ -178,20 +180,21 @@ script compiles `dynamic_ivf.cpp` and deposits `copenhagen.so` into
 ```
 src/                  C++ extension (dynamic_ivf.cpp, build.sh)
 python/core/          Python wrapper (CopenhagenIndex), __init__.py, copenhagen.so
-benchmarks/           Drift, MNIST, and cumulative-update benchmark scripts
-data/                 Dataset storage (SIFT, MNIST, Fashion-MNIST)
-results/              Benchmark output (CSV / plots)
+benchmarks/           Benchmark scripts:
+  benchmark_drift.py              MNIST → Fashion drift (one-shot + --per-cluster)
+  benchmark_drift_streaming.py    Gradual streaming drift (batches over time)
+  benchmark_hnsw_churn.py         30% churn vs HNSW
+  benchmark_ivf_churn.py          30% churn vs FAISS IVF
+  benchmark_vs_faiss.py           Static recall and throughput
+tests/                smoke_test.py, stress_test.py, test_gpu.py
+data/                 Dataset storage (MNIST, Fashion-MNIST, SIFT)
+results/              Benchmark output (JSON)
 ```
 
 ---
 
 ## Credits
 
-- **arXiv:2604.00271** — van der Hoog, Reinstädtler, Rotenberg (IT University of
-  Copenhagen). The logarithmic-method bucket structure, deletion-only hull analysis,
-  and tombstone correctness argument directly informed the Copenhagen design.
-- **AMPI** ([github.com/sashakolpakov/ampi](https://github.com/sashakolpakov/ampi))
-  — Adaptive multi-projection index with per-cluster Oja drift detection. Used as
-  a comparison baseline in the drift benchmarks; recommended when directional drift
-  signals are needed rather than pure insert throughput.
+- **arXiv:2604.00271** — van der Hoog, Reinstädtler, Rotenberg (IT University of Copenhagen). The logarithmic-method bucket structure, quarter-full invariant, and tombstone correctness argument for ranked queries directly informed the Copenhagen design.
 - **FAISS** (Facebook AI Research) — IVF baseline for all benchmarks.
+- **AMPI** ([github.com/sashakolpakov/ampi](https://github.com/sashakolpakov/ampi)) — Adaptive multi-projection index with per-cluster Oja drift detection. Recommended when directional drift signals are needed rather than pure insert throughput; used as comparison baseline in drift benchmarks.

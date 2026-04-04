@@ -15,7 +15,9 @@
 - **Adaptive cluster splitting** — `rebalance_if_needed()` checks live counts
   against `mean × split_threshold` after each `insert_batch`; `split_cluster`
   runs mini k-means (k=2) on live vectors only, drops tombstones, grows the
-  centroid array in place.
+  centroid array in place. Assignment step uses `blas_l2_distances` over a
+  contiguous `live_vecs` matrix — O(n·d) BLAS replaces O(n·d) scalar loops
+  per iteration (significant for large clusters at high `dim`).
 
 - **Correct move semantics** — explicit move constructors on `Cluster` and
   `PQCluster` prevent double-free when `std::vector` reallocates on splits.
@@ -27,6 +29,19 @@
 - **Save / load** — `save(path)` writes `clusters.npz` + `metadata.json`;
   `CopenhagenIndex.load(path)` restores centroids, cluster vectors/ids,
   tombstone set, `id_to_location`, and live counts.
+
+- **`get_cluster_stats()`** — Returns a list of per-cluster dicts:
+  `cluster_id`, `live_size`, `physical_size`, `centroid` (numpy array),
+  `last_split_round` (-1 for training-time clusters, else the
+  `rebalance_if_needed` round that created it). Exposed from C++ via pybind11
+  and forwarded through `CopenhagenIndex`. Useful for monitoring imbalance and
+  visualising split history.
+
+- **`insert_stream(generator, chunk_size=1000)`** — Python-layer streaming
+  insert: accepts a generator of `(dim,)` or `(n, dim)` numpy arrays,
+  accumulates up to `chunk_size` vectors, then calls `add()` per chunk.
+  Returns `(first_id, last_id)` range of auto-assigned IDs. Memory-bounded
+  for large streams.
 
 - **GPU acceleration (PyTorch)** — `CopenhagenIndex(device="cuda"|"mps"|"cpu")`
   offloads centroid distance computation to device via `torch.mm`. Centroids are
@@ -41,11 +56,6 @@
 
 ## Priority 1: Search Quality
 
-### Batch BLAS in `split_cluster`
-Mini k-means inside `split_cluster` uses scalar loops over `max_split_iters=10`.
-For large clusters (>10k vectors), replace assign/update steps with `cblas_sgemm`.
-**Files**: `src/dynamic_ivf.cpp` → `split_cluster()`.
-
 ### Auto-tune `split_threshold`
 Currently a manual hyperparameter (default 3.0). Candidate approach: track recall
 on a held-out query sample during `insert_batch`; lower threshold if recall drops
@@ -59,29 +69,24 @@ before distance computation.
 
 ---
 
-## Priority 2: Benchmarking
+## Priority 2: Benchmarking  ✓ Done
 
-### Continuous streaming drift
-Current `benchmark_drift.py` inserts all OOD data in one batch. Real systems
-see gradual drift (e.g., 1k new-distribution vectors per batch over 50 batches).
-Show recall over time as drift accumulates: FAISS degrades monotonically,
-Copenhagen stabilizes after the first few splits.
+- **Continuous streaming drift** — `benchmarks/benchmark_drift_streaming.py`:
+  inserts Fashion-MNIST in batches of 500 and records recall@10 after each.
+  Shows FAISS degrading monotonically vs Copenhagen stabilising after splits fire.
 
-### Per-cluster recall breakdown
-After drift, show recall separately for in-distribution vs OOD queries, and
-per-cluster query volumes. Makes the imbalance story visual.
+- **Per-cluster recall breakdown** — `benchmark_drift.py --per-cluster`:
+  prints per-cluster table (live_size, physical_size, last_split_round, query
+  hits) for in-dist (MNIST) and OOD (Fashion) queries after drift.
 
-### Full-scale drift benchmark
-`benchmark_drift.py --full` uses 60k MNIST + 60k Fashion. Currently slow because
-AMPI takes ~70s for 60k inserts. Either time-limit AMPI or run it separately.
+- **Full-scale drift benchmark** — `benchmark_drift.py --full` now accepts
+  `--ampi-timeout <seconds>` (default 30s) to cap AMPI's insert phase.
 
 ---
 
-## Priority 3: API / Usability
+## Priority 3: API / Usability  ✓ Done
 
-### Streaming insert API
-`insert_stream(generator)` — accept a Python generator yielding `(id, vector)`
-pairs so the caller doesn't need to materialize the full batch in memory.
+### Streaming insert API  ✓ Done
 
 ### `get_cluster_stats()` per-cluster breakdown
 Return per-cluster `(live_size, centroid, last_split_round)` for monitoring and

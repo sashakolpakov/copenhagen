@@ -712,6 +712,11 @@ public:
     // Tombstone set: O(1) delete, cleaned up lazily during search
     std::unordered_set<int> deleted_ids;
 
+    // Dense bitmap for O(1) dedup in search() when soft_k > 1.
+    // Indexed directly by vector ID; reset via search_seen_touched after each call.
+    std::vector<uint8_t> search_seen;
+    std::vector<int>     search_seen_touched;
+
     // Live vector count per cluster: excludes tombstoned vectors.
     // Used by rebalance_if_needed() so that dead vectors don't skew split decisions.
     // Centroids are frozen — we deliberately do NOT use vec_sum to track a
@@ -751,6 +756,8 @@ public:
         pq_clusters.resize(n_clusters);
         cluster_live_count.resize(n_clusters, 0);
         id_to_location.resize(1000000);
+        search_seen.assign(1000000, 0);
+        search_seen_touched.reserve(50000);
 
         for (int c = 0; c < n_clusters; c++) {
             std::string path = use_mmap
@@ -1243,18 +1250,22 @@ public:
 
             // Fill loop: compact deleted vectors lazily, then copy live vectors + norms
             int idx = 0;
+            const bool has_deletions = !deleted_ids.empty();
             for (int p = 0; p < probes; p++) {
                 int cid = centroid_dists[p].first;
                 Cluster& cluster = clusters[cid];
                 if (cluster.size == 0) continue;
 
                 // Check for tombstones; compact if any found
-                bool has_deleted = false;
-                for (int i = 0; i < cluster.size && !has_deleted; i++)
-                    if (deleted_ids.count(cluster.ids[i])) has_deleted = true;
-                if (has_deleted) {
-                    compact_cluster(cid);
-                    compact_pq_cluster(cid);
+                // Fast path: skip check entirely when no deletions exist
+                if (has_deletions) {
+                    bool has_deleted = false;
+                    for (int i = 0; i < cluster.size && !has_deleted; i++)
+                        if (deleted_ids.count(cluster.ids[i])) has_deleted = true;
+                    if (has_deleted) {
+                        compact_cluster(cid);
+                        compact_pq_cluster(cid);
+                    }
                 }
 
                 std::memcpy(search_buffer + idx * dim, cluster.vectors,
@@ -1283,13 +1294,28 @@ public:
                 results.push_back({search_ids[i], dists_buffer[i]});
 
             // Dedup when soft_k > 1 (same vector appears in multiple clusters)
+            // Use bitmap for faster dedup: avoid unordered_set overhead
             if (soft_k > 1) {
-                std::unordered_set<int> seen;
+                // Ensure search_seen is large enough
+                if (search_seen.size() < (size_t)n_vectors + 10000) {
+                    search_seen.resize(n_vectors + 10000, 0);
+                }
+                search_seen_touched.clear();
+                
                 int w = 0;
-                for (int i = 0; i < (int)results.size(); i++)
-                    if (seen.insert(results[i].first).second)
-                        results[w++] = results[i];
+                for (int i = 0; i < (int)results.size(); i++) {
+                    int id = results[i].first;
+                    if (search_seen[id]) continue;
+                    search_seen[id] = 1;
+                    search_seen_touched.push_back(id);
+                    results[w++] = results[i];
+                }
                 results.resize(w);
+                
+                // Clear touched entries for next query
+                for (int id : search_seen_touched) {
+                    search_seen[id] = 0;
+                }
             }
 
             int result_count = std::min(n_results, (int)results.size());

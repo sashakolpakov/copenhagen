@@ -7,6 +7,8 @@ _dir = os.path.dirname(__file__)
 _candidates = [f for f in os.listdir(_dir) if f.startswith('copenhagen') and f.endswith('.so')]
 if not _candidates:
     raise ImportError(f"copenhagen extension not found in {_dir}. Run: pip install -e .")
+# Prefer the most recently built .so (handles both generic and cpython-tagged names)
+_candidates.sort(key=lambda f: os.path.getmtime(os.path.join(_dir, f)), reverse=True)
 _module_path = os.path.join(_dir, _candidates[0])
 _spec = importlib.util.spec_from_file_location("copenhagen", _module_path)
 _copenhagen = importlib.util.module_from_spec(_spec)
@@ -197,11 +199,57 @@ class CopenhagenIndex:
     def get_stats(self):
         """Return all stats."""
         return self._index.get_stats()
-    
+
+    def get_cluster_stats(self):
+        """
+        Return per-cluster breakdown as a list of dicts, one per cluster:
+          cluster_id, live_size, physical_size, centroid (numpy array), last_split_round.
+
+        last_split_round is -1 for clusters present at training time, and the
+        insert-batch round number for clusters created by adaptive splits.
+        Useful for monitoring imbalance and visualising split history.
+        """
+        return self._index.get_cluster_stats()
+
     @property
     def stats(self):
         """Return all stats."""
         return self._index.get_stats()
+
+    def insert_stream(self, generator, chunk_size=1000):
+        """
+        Insert vectors from a generator without materialising the full batch.
+
+        Args:
+            generator: yields numpy arrays of shape (dim,) or (n, dim)
+            chunk_size: number of vectors to accumulate before each insert_batch call
+
+        Returns:
+            (first_id, last_id) — inclusive range of auto-assigned IDs
+        """
+        first_id = None
+        chunk = []
+        for item in generator:
+            vec = np.asarray(item, dtype=np.float32)
+            if vec.ndim == 1:
+                chunk.append(vec)
+            else:
+                chunk.extend(vec)
+            if len(chunk) >= chunk_size:
+                batch = np.stack(chunk)
+                if first_id is None:
+                    first_id = self._index.get_stats()["n_vectors"]
+                self.add(batch)
+                chunk.clear()
+        if chunk:
+            batch = np.stack(chunk)
+            if first_id is None:
+                first_id = self._index.get_stats()["n_vectors"]
+            self.add(batch)
+        if first_id is None:
+            return None
+        last_id = self._index.get_stats()["n_vectors"] - 1
+        return (first_id, last_id)
     
     def compact(self):
         """

@@ -153,7 +153,7 @@ def run_faiss(mnist_train, mnist_test, fashion_train, fashion_test,
 
 
 def run_ampi(mnist_train, mnist_test, fashion_train, fashion_test,
-             n_clusters, nprobe, k=10):
+             n_clusters, nprobe, k=10, insert_timeout=None):
     if not HAS_AMPI:
         return {}
     dim = mnist_train.shape[1]
@@ -180,7 +180,19 @@ def run_ampi(mnist_train, mnist_test, fashion_train, fashion_test,
     idx = AMPIAffineFanIndex(mnist_train, nlist=ampi_nlist, num_fans=NUM_FANS, cone_top_k=2)
 
     t0 = time.perf_counter()
-    idx.batch_add(fashion_train)
+    if insert_timeout is not None:
+        # Insert in chunks; stop if we exceed the time budget
+        chunk = max(1, len(fashion_train) // 20)
+        inserted = 0
+        for start in range(0, len(fashion_train), chunk):
+            if time.perf_counter() - t0 > insert_timeout:
+                print(f"    AMPI: timed out after {inserted}/{len(fashion_train)} vectors "
+                      f"({time.perf_counter()-t0:.1f}s) — partial results")
+                break
+            idx.batch_add(fashion_train[start:start + chunk])
+            inserted += min(chunk, len(fashion_train) - start)
+    else:
+        idx.batch_add(fashion_train)
     add_ms = (time.perf_counter() - t0) * 1000
 
     def _query(q):
@@ -244,9 +256,55 @@ def run_copenhagen(mnist_train, mnist_test, fashion_train, fashion_test,
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def per_cluster_recall(idx, fashion_test, mnist_test, all_data, mnist_train,
+                       n_clusters, nprobe, k=10):
+    """
+    Show recall separately for in-dist (MNIST) vs OOD (Fashion) queries,
+    and report which clusters are hit most often.
+    """
+    gt_fashion = _brute_knn(all_data, fashion_test, k)
+    gt_mnist   = _brute_knn(all_data, mnist_test,   k)
+
+    cluster_hits = [0] * n_clusters
+
+    def search_and_count(queries):
+        approx = []
+        for q in queries:
+            ids, _ = idx.search(q, k, nprobe)
+            approx.append(ids)
+            # Record which clusters were probed (nearest centroids)
+            dists_to_c = np.array([np.sum((q - idx.get_centroids()[c])**2)
+                                   for c in range(n_clusters)])
+            for top_c in np.argsort(dists_to_c)[:nprobe]:
+                cluster_hits[top_c] += 1
+        return np.array(approx)
+
+    I_f = search_and_count(fashion_test)
+    I_m = search_and_count(mnist_test)
+
+    recall_fashion = recall_k(I_f, gt_fashion)
+    recall_mnist   = recall_k(I_m, gt_mnist)
+
+    cluster_stats = idx.get_cluster_stats()
+
+    print("\n  Per-cluster breakdown after drift:")
+    print(f"    {'cid':>3}  {'live':>6}  {'phys':>6}  {'split_rnd':>9}  {'query_hits':>10}")
+    print(f"    {'---':>3}  {'----':>6}  {'----':>6}  {'---------':>9}  {'----------':>10}")
+    for cs in cluster_stats:
+        hits = cluster_hits[cs['cluster_id']]
+        sr   = cs['last_split_round']
+        sstr = f"{sr}" if sr >= 0 else "train"
+        print(f"    {cs['cluster_id']:>3}  {cs['live_size']:>6}  "
+              f"{cs['physical_size']:>6}  {sstr:>9}  {hits:>10}")
+    print(f"\n  recall@{k}: fashion={recall_fashion:.4f}  mnist={recall_mnist:.4f}")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--full', action='store_true', help='Use full dataset (~15 min)')
+    ap.add_argument('--full',        action='store_true', help='Use full dataset (~15 min)')
+    ap.add_argument('--per-cluster', action='store_true', help='Show per-cluster recall breakdown after drift')
+    ap.add_argument('--ampi-timeout', type=float, default=30.0,
+                    help='Max seconds for AMPI insert in --full mode (default: 30)')
     args = ap.parse_args()
 
     print("Copenhagen — MNIST → Fashion-MNIST Distribution Drift")
@@ -273,10 +331,12 @@ def main():
     faiss_res = run_faiss(mt, mq, ft, fq, N_CLUSTERS, NPROBE)
     all_results.update(faiss_res)
 
-    # AMPI
+    # AMPI — apply timeout in --full mode to avoid 70s stall
     if HAS_AMPI:
         print("  Running AMPI...")
-        ampi_res = run_ampi(mt, mq, ft, fq, N_CLUSTERS, NPROBE)
+        ampi_timeout = args.ampi_timeout if args.full else None
+        ampi_res = run_ampi(mt, mq, ft, fq, N_CLUSTERS, NPROBE,
+                            insert_timeout=ampi_timeout)
         all_results.update(ampi_res)
 
     # Copenhagen variants
@@ -286,11 +346,27 @@ def main():
         (2, 9999.0, "Copenhagen soft_k=2  (fixed, soft_k=2)"),
         (2,  3.0,   "Copenhagen best      (splits + soft_k=2)"),
     ]
+    best_idx_obj = None  # keep the last (best) index alive for --per-cluster
     for soft_k, threshold, tag in cph_configs:
         print(f"  Running {tag}...")
         r = run_copenhagen(mt, mq, ft, fq, N_CLUSTERS, NPROBE,
                            soft_k, threshold, tag)
         all_results[tag] = r
+        if soft_k == 2 and threshold == 3.0:
+            # Rebuild index for per-cluster breakdown (run_copenhagen doesn't return it)
+            from python.core import DynamicIVF as _DynamicIVF
+            best_idx_obj = _DynamicIVF(mt.shape[1], N_CLUSTERS, NPROBE, 0, 8, 256, soft_k)
+            best_idx_obj.split_threshold = threshold
+            best_idx_obj.train(mt)
+            best_idx_obj.insert_batch(ft)
+
+    # ── Per-cluster breakdown ──────────────────────────────────────────────────
+    if args.per_cluster and best_idx_obj is not None:
+        print("\n" + "=" * 78)
+        print("PER-CLUSTER BREAKDOWN  (Copenhagen best: splits + soft_k=2)")
+        all_data = np.vstack([mt, ft])
+        per_cluster_recall(best_idx_obj, fq, mq, all_data, mt,
+                           best_idx_obj.get_stats()["n_clusters"], NPROBE)
 
     # ── Summary table ─────────────────────────────────────────────────────────
     W = 44
