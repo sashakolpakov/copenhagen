@@ -437,36 +437,51 @@ def mmap_correctness():
     d = 32
 
     with tempfile.TemporaryDirectory() as mmap_dir:
+        sys.stderr.write("[DBG mmap] creating index\n"); sys.stderr.flush()
         idx = CopenhagenIndex(dim=d, n_clusters=8, nprobe=8, soft_k=2,
                               use_mmap=True, mmap_dir=mmap_dir)
         data = rng.standard_normal((500, d)).astype('float32')
+        sys.stderr.write("[DBG mmap] calling add(data)\n"); sys.stderr.flush()
         idx.add(data)
+        sys.stderr.write("[DBG mmap] add done\n"); sys.stderr.flush()
 
         to_delete = list(range(0, 100))
+        sys.stderr.write("[DBG mmap] deleting\n"); sys.stderr.flush()
         for gid in to_delete:
             idx.delete(gid)
+        sys.stderr.write("[DBG mmap] deletes done\n"); sys.stderr.flush()
 
         # trigger splits
         idx._index.split_threshold = 2.0
         ood = (rng.standard_normal((300, d)) + 30.0).astype('float32')
+        sys.stderr.write("[DBG mmap] calling add(ood)\n"); sys.stderr.flush()
         idx.add(ood)
+        sys.stderr.write("[DBG mmap] add(ood) done\n"); sys.stderr.flush()
 
         qs = rng.standard_normal((10, d)).astype('float32')
-        for q in qs:
+        sys.stderr.write("[DBG mmap] searching\n"); sys.stderr.flush()
+        for qi, q in enumerate(qs):
+            sys.stderr.write(f"[DBG mmap] search {qi}\n"); sys.stderr.flush()
             ids, _ = idx.search(q, k=10)
             assert not (set(ids) & set(to_delete)), "mmap: deleted ID in results"
             assert len(ids) == len(set(ids)), "mmap: duplicate IDs"
+        sys.stderr.write("[DBG mmap] searches done\n"); sys.stderr.flush()
 
         # save / load roundtrip
+        sys.stderr.write("[DBG mmap] saving\n"); sys.stderr.flush()
         with tempfile.TemporaryDirectory() as save_dir:
             idx.save(save_dir)
+            sys.stderr.write("[DBG mmap] loading\n"); sys.stderr.flush()
             idx2 = CopenhagenIndex.load(save_dir)
+        sys.stderr.write("[DBG mmap] save/load done\n"); sys.stderr.flush()
 
         assert idx2.n_vectors == idx.n_vectors, "mmap load: n_vectors mismatch"
         assert idx2.get_stats()["deleted_count"] == idx.get_stats()["deleted_count"]
+        sys.stderr.write("[DBG mmap] searching idx2\n"); sys.stderr.flush()
         for q in qs:
             ids2, _ = idx2.search(q, k=10)
             assert not (set(ids2) & set(to_delete)), "mmap load: deleted ID in results"
+        sys.stderr.write("[DBG mmap] all done\n"); sys.stderr.flush()
 
 
 @_register
