@@ -12,6 +12,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libopenblas-dev
+
       - name: Install
         run: |
           pip install -e .
