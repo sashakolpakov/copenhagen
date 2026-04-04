@@ -279,6 +279,7 @@ class CopenhagenIndex:
             meta.get("pq_m", 8), meta.get("pq_ks", 256),
             meta["soft_k"],
             is_mmap, mmap_dir,
+            False,  # truncate_mmap_files=False: existing .bin files hold valid data
         )
         obj._index.split_threshold = meta["split_threshold"]
         obj._index.max_split_iters = meta["max_split_iters"]

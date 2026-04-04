@@ -728,7 +728,8 @@ public:
 
     DynamicIVF(int dim, int n_clusters, int nprobe = 1, int use_pq = 0,
                int pq_m = 8, int pq_ks = 256, int soft_k = 1,
-               bool use_mmap = false, const std::string& mmap_dir = "")
+               bool use_mmap = false, const std::string& mmap_dir = "",
+               bool truncate_mmap_files = true)
         : dim(dim), n_clusters(n_clusters), nprobe(nprobe), use_pq(use_pq),
           pq_m(pq_m), pq_ks(pq_ks), soft_k(soft_k),
           use_mmap(use_mmap), mmap_dir(mmap_dir),
@@ -755,7 +756,7 @@ public:
             std::string path = use_mmap
                 ? mmap_dir + "/cluster_" + std::to_string(c) + ".bin"
                 : std::string();
-            clusters[c].init(dim, path, /*truncate_new=*/use_mmap);
+            clusters[c].init(dim, path, /*truncate_new=*/use_mmap && truncate_mmap_files);
         }
 
         if (use_pq) {
@@ -1826,16 +1827,17 @@ PYBIND11_MODULE(copenhagen, m) {
     m.doc() = "Copenhagen - A Quantum-Inspired Dynamic IVF Index";
 
     py::class_<DynamicIVF>(m, "DynamicIVF")
-        .def(py::init<int, int, int, int, int, int, int, bool, const std::string&>(),
+        .def(py::init<int, int, int, int, int, int, int, bool, const std::string&, bool>(),
              py::arg("dim"),
              py::arg("n_clusters"),
-             py::arg("nprobe")   = 1,
-             py::arg("use_pq")   = 0,
-             py::arg("pq_m")     = 8,
-             py::arg("pq_ks")    = 256,
-             py::arg("soft_k")   = 1,
-             py::arg("use_mmap") = false,
-             py::arg("mmap_dir") = "")
+             py::arg("nprobe")              = 1,
+             py::arg("use_pq")              = 0,
+             py::arg("pq_m")                = 8,
+             py::arg("pq_ks")               = 256,
+             py::arg("soft_k")              = 1,
+             py::arg("use_mmap")            = false,
+             py::arg("mmap_dir")            = "",
+             py::arg("truncate_mmap_files") = true)
         .def("train",          &DynamicIVF::train,          py::arg("data"))
         .def("insert",         &DynamicIVF::insert_vector,  py::arg("vector"))
         .def("insert_batch",             &DynamicIVF::insert_batch,             py::arg("data"))
