@@ -508,13 +508,17 @@ def main():
     passed, failed = [], []
     for fn in _TESTS:
         name = fn.__name__
+        sys.stderr.write(f"[START] {name}\n")
+        sys.stderr.flush()
         try:
             fn()
             passed.append(name)
-            print(f"[PASS] {name}")
+            sys.stderr.write(f"[PASS] {name}\n")
+            sys.stderr.flush()
         except Exception:
             failed.append(name)
-            print(f"[FAIL] {name}")
+            sys.stderr.write(f"[FAIL] {name}\n")
+            sys.stderr.flush()
             traceback.print_exc()
 
     print(f"\n{len(passed)}/{len(passed)+len(failed)} passed")
