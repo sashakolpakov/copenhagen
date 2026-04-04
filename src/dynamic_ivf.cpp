@@ -327,6 +327,7 @@ struct PQCodebook {
                     c_sq[ks] = s;
                 }
 
+#if defined(USE_ACCELERATE) || defined(USE_OPENBLAS) || defined(USE_MKL)
                 float neg2 = -2.0f;
                 float zero = 0.0f;
                 cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
@@ -340,6 +341,16 @@ struct PQCodebook {
                         dists[i * Ks + ks] += x_sq[i] + c_sq[ks];
                     }
                 }
+#else
+                for (int i = 0; i < n; i++) {
+                    for (int ks = 0; ks < Ks; ks++) {
+                        float dot = 0.0f;
+                        for (int j = 0; j < d_sub; j++)
+                            dot += data_mat[i * d_sub + j] * cent_mat[ks * d_sub + j];
+                        dists[i * Ks + ks] = x_sq[i] - 2.0f * dot + c_sq[ks];
+                    }
+                }
+#endif
 
                 for (int i = 0; i < n; i++) {
                     int best_ks = 0;
@@ -502,7 +513,7 @@ struct PQCluster {
 inline void blas_l2_distances(const float* queries, int nq, int d,
                               const float* vecs, int nv,
                               float* dists) {
-#if defined(USE_ACCELERATE)
+#if defined(USE_ACCELERATE) || defined(USE_OPENBLAS) || defined(USE_MKL)
     float alpha = -2.0f, beta = 0.0f;
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                 nq, nv, d, alpha, queries, d, vecs, d, beta, dists, nv);
