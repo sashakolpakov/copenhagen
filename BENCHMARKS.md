@@ -169,3 +169,20 @@ python benchmarks/benchmark_vs_faiss.py all   # include MNIST, Fashion, SIFT
 ```
 
 Figures are written to `figures/`. Results JSON to `results/`.
+
+## Running the Test Suites
+
+GPU (MPS/CUDA) tests and FAISS benchmarks **must be run in separate invocations**
+to avoid an OpenMP runtime conflict on macOS (two incompatible `libomp` copies in
+the same process). Use the pytest markers:
+
+```bash
+# GPU correctness + performance (initialises MPS/CUDA context)
+pytest -m gpu
+
+# FAISS throughput benchmarks (loads FAISS OpenMP runtime)
+pytest -m faiss
+
+# All other tests (Copenhagen-only, no GPU or FAISS)
+pytest -m "not gpu and not faiss"
+```

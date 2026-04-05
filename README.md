@@ -186,7 +186,8 @@ benchmarks/           Benchmark scripts:
   benchmark_hnsw_churn.py         30% churn vs HNSW
   benchmark_ivf_churn.py          30% churn vs FAISS IVF
   benchmark_vs_faiss.py           Static recall and throughput
-tests/                smoke_test.py, stress_test.py, test_gpu.py
+tests/                smoke_test.py, stress_test.py, test_gpu.py, bench_gpu.py, bench_search.py
+                      GPU and FAISS tests must run separately: pytest -m gpu / pytest -m faiss
 data/                 Dataset storage (MNIST, Fashion-MNIST, SIFT)
 results/              Benchmark output (JSON)
 ```

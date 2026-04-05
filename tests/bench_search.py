@@ -119,6 +119,7 @@ def _qps_ampi(idx, queries, repeats=5):
 # 1. Search QPS: Copenhagen vs FAISS IVF / HNSW / AMPI
 # ---------------------------------------------------------------------------
 
+@pytest.mark.faiss
 def test_search_qps_vs_faiss(capsys):
     with capsys.disabled():
         print(f"\n--- Search QPS: Copenhagen vs FAISS IVF / HNSW"
@@ -213,6 +214,7 @@ def _insert_throughput_faiss(n, d=D, n_clusters=N_CLUSTERS, repeats=3):
     return sorted(times)[len(times) // 2]
 
 
+@pytest.mark.faiss
 def test_insert_throughput(capsys):
     with capsys.disabled():
         print(f"\n--- Insert throughput: Copenhagen vs FAISS IVF (d={D}, n_clusters={N_CLUSTERS}) ---")

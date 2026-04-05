@@ -17,19 +17,20 @@ import time
 import sys
 from pathlib import Path
 
+import importlib.util
+
 import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
 from core import CopenhagenIndex
 
-try:
-    import torch
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
+HAS_TORCH = importlib.util.find_spec("torch") is not None
 
-pytestmark = pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not HAS_TORCH, reason="torch not installed"),
+]
 
 SCALES = [10_000, 50_000, 100_000]
 
@@ -37,6 +38,7 @@ SCALES = [10_000, 50_000, 100_000]
 def _device():
     if not HAS_TORCH:
         return None
+    import torch
     if torch.backends.mps.is_available():
         return "mps"
     if torch.cuda.is_available():
@@ -48,6 +50,7 @@ def _sync(device):
     """Block until device ops complete (needed for accurate timing)."""
     if not HAS_TORCH:
         return
+    import torch
     if device == "cuda":
         torch.cuda.synchronize()
     elif device == "mps":
@@ -106,6 +109,7 @@ def test_insert_throughput(capsys):
 
 def _measure_transfer(device, n=50_000, d=64, repeats=5):
     """Time a full host→device→host round trip for an (n, d) float32 matrix."""
+    import torch
     data = np.random.default_rng(1).standard_normal((n, d)).astype(np.float32)
     results = []
     for _ in range(repeats):
@@ -143,6 +147,7 @@ def test_data_transfer(capsys):
 # ---------------------------------------------------------------------------
 
 def _measure_assignment(device, n=50_000, d=64, k=32, repeats=5):
+    import torch
     rng = np.random.default_rng(2)
     vectors_np = rng.standard_normal((n, d)).astype(np.float32)
     centroids_np = rng.standard_normal((k, d)).astype(np.float32)
@@ -198,6 +203,7 @@ def test_assignment_compute(capsys):
 # ---------------------------------------------------------------------------
 
 def _measure_pinning(device, d=64, k=32, repeats=10):
+    import torch
     centroids_np = np.random.default_rng(3).standard_normal((k, d)).astype(np.float32)
     times = []
     for _ in range(repeats):
