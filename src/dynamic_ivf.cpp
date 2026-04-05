@@ -169,14 +169,14 @@ struct Cluster {
             if (vec_sum) free(vec_sum);
             if (norms)   free(norms);
             if (ids)     free(ids);
-            vectors    = other.vectors;  other.vectors   = nullptr;
-            vec_sum    = other.vec_sum;  other.vec_sum   = nullptr;
-            norms      = other.norms;    other.norms     = nullptr;
-            ids        = other.ids;      other.ids       = nullptr;
-            size       = other.size;     other.size      = 0;
-            capacity   = other.capacity; other.capacity  = 0;
-            mmap_path  = std::move(other.mmap_path);
-            mmap_size  = other.mmap_size; other.mmap_size = 0;
+            vectors   = other.vectors;  other.vectors   = nullptr;
+            vec_sum   = other.vec_sum;  other.vec_sum   = nullptr;
+            norms     = other.norms;    other.norms     = nullptr;
+            ids       = other.ids;      other.ids       = nullptr;
+            size      = other.size;     other.size      = 0;
+            capacity  = other.capacity; other.capacity  = 0;
+            mmap_path = std::move(other.mmap_path);
+            mmap_size = other.mmap_size; other.mmap_size = 0;
         }
         return *this;
     }
@@ -279,7 +279,7 @@ struct Cluster {
             if (is_mmap()) {
                 _mmap_grow(new_cap, dim);
                 int*   new_ids   = (int*)realloc(ids,   (size_t)new_cap * sizeof(int));
-                float* new_norms = (float*)realloc(norms, (size_t)new_cap * sizeof(float));
+                float* new_norms = (float*)realloc(norms,(size_t)new_cap * sizeof(float));
                 if (!new_ids || !new_norms) throw std::bad_alloc();
                 ids   = new_ids;
                 norms = new_norms;
@@ -819,7 +819,6 @@ public:
     // Tombstone compaction helpers (lazy, triggered during search)
     // -----------------------------------------------------------------------
 
-    // Physically removes deleted vectors from a cluster in-place (single pass).
     void compact_cluster(int cluster_id) {
         // Physically remove tombstoned vectors from the cluster array.
         // We do NOT touch vec_sum here: centroids are frozen after training and
@@ -954,6 +953,7 @@ public:
         for (int cluster_id : find_top_k_centroids(data, soft_k)) {
             int pos = clusters[cluster_id].size;
             clusters[cluster_id].add_vector(data, dim, id);
+
             id_to_location[id].push_back({cluster_id, pos});
             cluster_live_count[cluster_id]++;
             if (use_pq) {
@@ -974,6 +974,7 @@ public:
         for (int cluster_id : find_top_k_centroids(data, soft_k)) {
             int pos = clusters[cluster_id].size;
             clusters[cluster_id].add_vector(data, dim, id);
+
             id_to_location[id].push_back({cluster_id, pos});
             cluster_live_count[cluster_id]++;
             if (use_pq) {
@@ -1098,6 +1099,7 @@ public:
             int target = (assign[i] == 0) ? cluster_id : new_cluster_id;
             int pos = clusters[target].size;
             clusters[target].add_vector(old_vecs.data() + i * dim, dim, old_ids[i]);
+
 
             if (use_pq) {
                 std::vector<uint8_t> codes(pq_m);
@@ -1236,28 +1238,48 @@ public:
             return py::make_tuple(py_ids, py_distances);
 
         } else {
-            // Ensure buffer is large enough for pre-compaction estimate
-            if (total_vectors > max_vectors_per_probe) {
-                max_vectors_per_probe = total_vectors;
-                free(search_buffer);
-                free(norms_buffer);
+            // Late materialization: compute distances per-cluster in-place on
+            // cluster storage — no memcpy of vectors into a staging buffer.
+            // Maintain a top-k max-heap to avoid sorting all candidates.
+
+            // dists_buffer only needs to hold one cluster at a time.
+            int max_cluster_size = 0;
+            for (int p = 0; p < probes; p++)
+                max_cluster_size = std::max(max_cluster_size,
+                                            clusters[centroid_dists[p].first].size);
+
+            if (max_cluster_size > max_vectors_per_probe) {
+                max_vectors_per_probe = max_cluster_size;
                 free(dists_buffer);
-                search_buffer = (float*)aligned_alloc(32, max_vectors_per_probe * dim * sizeof(float));
-                norms_buffer  = (float*)malloc(max_vectors_per_probe * sizeof(float));
-                dists_buffer  = (float*)aligned_alloc(32, max_vectors_per_probe * sizeof(float));
-                search_ids.resize(max_vectors_per_probe);
+                dists_buffer = (float*)aligned_alloc(32, max_vectors_per_probe * sizeof(float));
             }
 
-            // Fill loop: compact deleted vectors lazily, then copy live vectors + norms
-            int idx = 0;
+            if (total_vectors == 0) return py::make_tuple(py::list(), py::list());
+
+            float q_sq = 0;
+            for (int i = 0; i < dim; i++) q_sq += ptr[i] * ptr[i];
+
             const bool has_deletions = !deleted_ids.empty();
+
+            // Dedup bitmap — only active when soft_k > 1
+            if (soft_k > 1) {
+                if (search_seen.size() < (size_t)n_vectors + 10000)
+                    search_seen.resize(n_vectors + 10000, 0);
+                search_seen_touched.clear();
+            }
+
+            // Max-heap capped at n_results: heap[0] is the current worst keeper.
+            // pair<dist, id> with default less<> comparator → max-heap on dist.
+            using HeapEntry = std::pair<float, int>;
+            std::vector<HeapEntry> heap;
+            heap.reserve(n_results + 1);
+
             for (int p = 0; p < probes; p++) {
                 int cid = centroid_dists[p].first;
                 Cluster& cluster = clusters[cid];
                 if (cluster.size == 0) continue;
 
-                // Check for tombstones; compact if any found
-                // Fast path: skip check entirely when no deletions exist
+                // Tombstone compaction (fast path: skip entirely when no deletions)
                 if (has_deletions) {
                     bool has_deleted = false;
                     for (int i = 0; i < cluster.size && !has_deleted; i++)
@@ -1268,64 +1290,54 @@ public:
                     }
                 }
 
-                std::memcpy(search_buffer + idx * dim, cluster.vectors,
-                            cluster.size * dim * sizeof(float));
-                std::memcpy(norms_buffer + idx, cluster.norms,
-                            cluster.size * sizeof(float));
-                for (int i = 0; i < cluster.size; i++)
-                    search_ids[idx + i] = cluster.ids[i];
-                idx += cluster.size;
+                if (cluster.size == 0) continue;
+
+                // BLAS in-place on cluster storage — no memcpy
+                blas_l2_distances_precomp(ptr, &q_sq, 1, dim,
+                                          cluster.vectors, cluster.norms, cluster.size,
+                                          dists_buffer);
+
+                for (int i = 0; i < cluster.size; i++) {
+                    int id = cluster.ids[i];
+                    float dist = dists_buffer[i];
+
+                    if (soft_k > 1) {
+                        if (search_seen[id]) continue;
+                        search_seen[id] = 1;
+                        search_seen_touched.push_back(id);
+                    }
+
+                    if ((int)heap.size() < n_results) {
+                        heap.push_back({dist, id});
+                        if ((int)heap.size() == n_results)
+                            std::make_heap(heap.begin(), heap.end());
+                    } else if (dist < heap[0].first) {
+                        std::pop_heap(heap.begin(), heap.end());
+                        heap.back() = {dist, id};
+                        std::push_heap(heap.begin(), heap.end());
+                    }
+                }
             }
-            // idx is the true vector count after compaction
-            total_vectors = idx;
 
-            if (total_vectors == 0) return py::make_tuple(py::list(), py::list());
-
-            // Use precomputed norms to skip the per-vector norm recomputation
-            float q_sq = 0;
-            for (int i = 0; i < dim; i++) q_sq += ptr[i] * ptr[i];
-            blas_l2_distances_precomp(ptr, &q_sq, 1, dim,
-                                      search_buffer, norms_buffer, total_vectors,
-                                      dists_buffer);
-
-            std::vector<std::pair<int, float>> results;
-            results.reserve(total_vectors);
-            for (int i = 0; i < total_vectors; i++)
-                results.push_back({search_ids[i], dists_buffer[i]});
-
-            // Dedup when soft_k > 1 (same vector appears in multiple clusters)
-            // Use bitmap for faster dedup: avoid unordered_set overhead
+            // Clear dedup bitmap for next query
             if (soft_k > 1) {
-                // Ensure search_seen is large enough
-                if (search_seen.size() < (size_t)n_vectors + 10000) {
-                    search_seen.resize(n_vectors + 10000, 0);
-                }
-                search_seen_touched.clear();
-                
-                int w = 0;
-                for (int i = 0; i < (int)results.size(); i++) {
-                    int id = results[i].first;
-                    if (search_seen[id]) continue;
-                    search_seen[id] = 1;
-                    search_seen_touched.push_back(id);
-                    results[w++] = results[i];
-                }
-                results.resize(w);
-                
-                // Clear touched entries for next query
-                for (int id : search_seen_touched) {
-                    search_seen[id] = 0;
-                }
+                for (int id : search_seen_touched) search_seen[id] = 0;
             }
 
-            int result_count = std::min(n_results, (int)results.size());
-            std::partial_sort(results.begin(), results.begin() + result_count, results.end(),
-                              [](const auto& a, const auto& b) { return a.second < b.second; });
+            if (heap.empty()) return py::make_tuple(py::list(), py::list());
+
+            // Sort ascending (nearest first).
+            // sort_heap requires the heap invariant, which only holds when the
+            // heap reached capacity (n_results). Use plain sort otherwise.
+            if ((int)heap.size() == n_results)
+                std::sort_heap(heap.begin(), heap.end());
+            else
+                std::sort(heap.begin(), heap.end());
 
             py::list py_ids, py_distances;
-            for (int i = 0; i < result_count; i++) {
-                py_ids.append(results[i].first);
-                py_distances.append(results[i].second);
+            for (auto& [dist, id] : heap) {
+                py_ids.append(id);
+                py_distances.append(dist);
             }
             return py::make_tuple(py_ids, py_distances);
         }
@@ -1560,6 +1572,7 @@ public:
                 int cluster_id = cidx[ki];
                 int pos = clusters[cluster_id].size;
                 clusters[cluster_id].add_vector(ptr + i * dim, dim, id);
+    
                 id_to_location[id].push_back({cluster_id, pos});
                 cluster_live_count[cluster_id]++;
                 if (use_pq) {
@@ -1606,6 +1619,7 @@ public:
                 if (cluster_id < 0 || cluster_id >= n_clusters) continue;
                 int pos = clusters[cluster_id].size;
                 clusters[cluster_id].add_vector(ptr + i * dim, dim, id);
+    
                 id_to_location[id].push_back({cluster_id, pos});
                 cluster_live_count[cluster_id]++;
                 if (use_pq) {
