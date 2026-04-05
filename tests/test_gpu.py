@@ -5,6 +5,8 @@ The GPU path uses torch.mm for centroid assignment; the CPU path uses cblas_sgem
 Results should be identical up to floating-point tie-breaking in topk.
 """
 
+import importlib.util
+
 import numpy as np
 import pytest
 import sys
@@ -13,17 +15,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
 from core import CopenhagenIndex
 
-try:
-    import torch
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
+HAS_TORCH = importlib.util.find_spec("torch") is not None
 
 
 def _available_device():
     """Return the best available torch device string, or None if torch absent."""
     if not HAS_TORCH:
         return None
+    import torch
     if torch.backends.mps.is_available():
         return "mps"
     if torch.cuda.is_available():
@@ -43,6 +42,7 @@ def _build_index(device, n=2000, d=64, n_clusters=16, soft_k=2, seed=42):
     return idx, rng
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 def test_gpu_insert_recall():
     """GPU-inserted index should have recall@10 ≥ 0.80 on its own training data."""
@@ -59,6 +59,7 @@ def test_gpu_insert_recall():
     assert hits > 0, "search returned no results"
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 def test_gpu_cpu_consistency():
     """GPU and CPU paths should return the same set of vectors after identical inserts."""
@@ -86,6 +87,7 @@ def test_gpu_cpu_consistency():
     assert overlap >= 8, f"CPU and GPU results diverge too much: overlap={overlap}/10"
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 def test_gpu_delete_correctness():
     """Deleted vectors must not appear in GPU-inserted index search results."""
@@ -107,6 +109,7 @@ def test_gpu_delete_correctness():
         f"deleted id {to_delete} still returned after delete+compact"
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 def test_gpu_stats():
     """n_vectors must be correct after GPU inserts."""

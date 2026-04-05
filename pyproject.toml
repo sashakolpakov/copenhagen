@@ -30,3 +30,7 @@ include = ["python*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py", "bench_*.py"]
+markers = [
+    "gpu: tests that initialise a GPU/MPS context (run separately from faiss tests)",
+    "faiss: tests that load the FAISS library (run separately from gpu tests)",
+]
