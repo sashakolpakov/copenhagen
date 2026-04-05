@@ -85,7 +85,8 @@ def run(dataset_name, data, queries, gt, metric='l2'):
 
     def make_flat_query(flat_idx):
         def fn(q):
-            return [(i, 0.0) for i in flat_idx.search(q[None], K_MAX)[1][0]]
+            dists, ids = flat_idx.search(q[None], K_MAX)
+            return (ids[0], dists[0])
         return fn
 
     dynamic_configs = build_dynamic_ivf_configs(data, queries, gt)
@@ -119,7 +120,8 @@ def _set_nprobe(index, nprobe):
 
 def make_ivf_query(ivf_index):
     def fn(q):
-        return [(i, 0.0) for i in ivf_index.search(q[None], K_MAX)[1][0]]
+        dists, ids = ivf_index.search(q[None], K_MAX)
+        return (ids[0], dists[0])
     return fn
 
 

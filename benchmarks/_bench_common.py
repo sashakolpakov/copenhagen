@@ -141,8 +141,8 @@ def evaluate(label, query_fn, queries, gt, data, n, pareto=None, exact_labels=()
     results = [query_fn(q) for q in queries]
     ms = (time.perf_counter() - t0) / len(queries) * 1e3
 
-    indices = np.array([np.array(res[0], dtype=np.int64) for res in results])
-    padded = np.array([np.pad(ix[:K_MAX], (0, max(0, K_MAX - len(ix))), constant_values=-1) for ix in indices])
+    raw = [np.array(res[0], dtype=np.int64) for res in results]
+    padded = np.array([np.pad(ix[:K_MAX], (0, max(0, K_MAX - len(ix))), constant_values=-1) for ix in raw])
 
     rec1 = recall(gt, padded, 1)
     rec10 = recall(gt, padded, K)
@@ -181,9 +181,9 @@ def run_evaluation(configs, queries, gt, data, n, exact_labels=()):
 
 # ── figures ───────────────────────────────────────────────────────────────────
 
-    FAMILY_STYLE_BASE = {
-    "Flat L2":  dict(color="black", marker="*", ls="none", ms=14, zorder=5),
-    "Copenhagen": dict(color="#1f77b4", marker="o", ls="-", lw=2, ms=7),
+FAMILY_STYLE_BASE = {
+    "Flat L2":  dict(color="black", marker="*", ls="none", s=120, zorder=5),
+    "Copenhagen": dict(color="#1f77b4", marker="o", ls="-", lw=2, s=49),
 }
 
 
@@ -267,7 +267,7 @@ def build_dynamic_ivf_configs(data, queries, gt):
 
             print(f"  Building Copenhagen n_clusters={nc} nprobe={np_}...", end=" ", flush=True)
             t0 = time.perf_counter()
-            idx = CopenhagenIndex(dim=d, n_clusters=nc, nprobe=np_)
+            idx = DynamicIVFIndex(dim=d, n_clusters=nc, nprobe=np_)
             idx.add(data)
             print(f"{time.perf_counter() - t0:.2f}s")
 
