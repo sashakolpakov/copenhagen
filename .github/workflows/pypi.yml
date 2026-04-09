@@ -1,0 +1,111 @@
+name: Upload Python Package
+
+on:
+  push:
+    tags:
+      - "pypi-*.*.*"   # e.g. pypi-0.1.0, pypi-1.2.3
+
+jobs:
+  # ── Build platform wheels ──────────────────────────────────────────────────
+  build-wheels:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-13          # Intel runner  → x86_64
+          - os: macos-latest      # ARM runner    → arm64
+          - os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install cibuildwheel
+        run: pip install "cibuildwheel==2.*"
+
+      - name: Build wheels
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-musllinux_*"   # skip musl/Alpine (OpenBLAS setup there is brittle)
+
+          # avx2 → -march=x86-64-v3 on x86, -mcpu=apple-m1 on arm64.
+          # Enables the AVX2 and NEON fast paths in dynamic_ivf.cpp while
+          # remaining portable (Haswell 2013+, Ryzen 2017+, all Apple Silicon).
+          # Override with COPENHAGEN_ARCH=native to build for the exact host CPU,
+          # or COPENHAGEN_ARCH=baseline for a plain scalar build.
+          CIBW_ENVIRONMENT: "COPENHAGEN_ARCH=avx2"
+
+          # Install OpenBLAS inside the manylinux container before each build
+          CIBW_BEFORE_BUILD_LINUX: >
+            dnf install -y openblas-devel 2>/dev/null ||
+            yum install -y openblas-devel 2>/dev/null || true
+
+          # Use manylinux_2_28 (AlmaLinux 8, dnf) for better package availability
+          CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux_2_28_x86_64
+
+          # macOS: Accelerate is always present, no extra install needed
+          # Windows: setup.py uses /arch:AVX2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  # ── Build source distribution ──────────────────────────────────────────────
+  build-sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Build sdist
+        run: |
+          pip install build
+          python -m build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  # ── Publish to PyPI ────────────────────────────────────────────────────────
+  publish:
+    name: Publish to PyPI
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install twine
+        run: pip install twine
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload dist/*

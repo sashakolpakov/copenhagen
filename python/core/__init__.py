@@ -1,20 +1,13 @@
 import numpy as np
-import importlib.util
 import json
 import os
 
-_dir = os.path.dirname(__file__)
-_candidates = [f for f in os.listdir(_dir) if f.startswith('copenhagen') and f.endswith('.so')]
-if not _candidates:
-    raise ImportError(f"copenhagen extension not found in {_dir}. Run: pip install -e .")
-# Prefer the most recently built .so (handles both generic and cpython-tagged names)
-_candidates.sort(key=lambda f: os.path.getmtime(os.path.join(_dir, f)), reverse=True)
-_module_path = os.path.join(_dir, _candidates[0])
-_spec = importlib.util.spec_from_file_location("copenhagen", _module_path)
-_copenhagen = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_copenhagen)
-
-DynamicIVF = _copenhagen.DynamicIVF
+try:
+    from .copenhagen import DynamicIVF
+except ImportError as _e:
+    raise ImportError(
+        f"Copenhagen C++ extension not found. Run: pip install -e .\nOriginal error: {_e}"
+    ) from _e
 
 
 class CopenhagenIndex:

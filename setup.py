@@ -92,15 +92,42 @@ def _ext_modules():
     extra_compile = ["-O3", "-std=c++17", "-fvisibility=hidden"]
     extra_link    = []
 
+    # COPENHAGEN_ARCH controls the CPU tuning level:
+    #   "native"   – optimise for this exact machine (fastest, not portable)
+    #   "avx2"     – AVX2 + FMA baseline, default for PyPI wheels
+    #                (Intel Haswell 2013+, AMD Ryzen 2017+; ~95 % of x86 machines)
+    #   "baseline" – plain x86-64 / arm64, scalar fallback only
+    arch_env = os.environ.get("COPENHAGEN_ARCH", "avx2")
+
     if platform.system() == "Darwin":
-        if shutil.which("gcc") and "Apple" not in subprocess.getoutput("gcc --version"):
-            extra_compile += ["-march=native"]
-        else:
-            extra_compile += ["-mcpu=native"]
+        machine = platform.machine()
+        is_apple_clang = not (
+            shutil.which("gcc") and "Apple" not in subprocess.getoutput("gcc --version")
+        )
+        if machine == "arm64":
+            # NEON is always available on arm64; -mcpu selects pipeline tuning.
+            if arch_env == "native":
+                extra_compile += ["-mcpu=native"]
+            elif arch_env != "baseline":
+                extra_compile += ["-mcpu=apple-m1"]   # covers all Apple Silicon
+        else:  # x86_64
+            if arch_env == "native":
+                flag = "-mcpu=native" if is_apple_clang else "-march=native"
+                extra_compile += [flag]
+            elif arch_env != "baseline":
+                extra_compile += ["-march=x86-64-v3"]  # AVX2 + FMA
     elif platform.system() == "Linux":
-        extra_compile += ["-march=native"]
+        if arch_env == "native":
+            extra_compile += ["-march=native"]
+        elif arch_env != "baseline":
+            extra_compile += ["-march=x86-64-v3"]      # AVX2 + FMA
     elif platform.system() == "Windows":
-        extra_compile = ["/O2", "/std:c++17"]
+        if arch_env == "native":
+            extra_compile = ["/O2", "/std:c++17"]      # MSVC has no native-march
+        elif arch_env == "baseline":
+            extra_compile = ["/O2", "/std:c++17"]
+        else:
+            extra_compile = ["/O2", "/std:c++17", "/arch:AVX2"]
 
     blas_defines, blas_inc, blas_link = _detect_blas()
 
