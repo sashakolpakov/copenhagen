@@ -25,7 +25,7 @@ jobs:
 
       - name: Build distributions
         run: |
-          python -m build --sdist --wheel
+          python -m build --sdist
 
       - name: Publish to PyPI
         env:
