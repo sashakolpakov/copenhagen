@@ -193,17 +193,86 @@ Full tables in [BENCHMARKS.md](BENCHMARKS.md).
 
 ---
 
+## Compression: TurboQuant + block VQ (vs TurboVec)
+
+Copenhagen wins **dynamics**; [TurboVec](https://github.com/RyanCodrai/turbovec)
+(the TurboQuant scalar quantizer) wins **compression**. The aim is to have both
+in one index. We reimplemented TurboQuant from scratch in C++ (algorithm only —
+no Rust) and added a **block / sub-vector vector-quantization** front-end that
+fixes TurboQuant's low-dimension weakness. Full derivation and references:
+[docs/source/theory.rst](docs/source/theory.rst).
+
+**Head-to-head on normalized SIFT-128 (50k), recall@10 vs bytes/vector:**
+
+| Index | recall@10 | bytes/vec | compression |
+|---|---|---|---|
+| Copenhagen float | 0.995 | 512 | 1.0× |
+| Copenhagen **IVFPQ** (M=16) | 0.650 | **528** | 0.97× *(larger!)* |
+| TurboVec 4-bit | 0.848 | 68 | 7.5× |
+| TurboVec 2-bit | 0.627 | 36 | 14.2× |
+
+Copenhagen's *current* IVFPQ path is dominated on both axes — it stores PQ codes
+*on top of* retained float32, so it is bigger **and** lower-recall. TurboQuant is
+the replacement.
+
+**Why TurboVec struggles at low dimension — and what we do about it.** After a
+random rotation, a unit vector's coordinates are Beta-distributed and, crucially,
+*negatively correlated* by the constraint Σxᵢ²=1 — an `O(1/d)` effect that is
+negligible at d=1536 but dominant at d=128. Scalar (per-coordinate) quantization
+assumes independence and throws this structure away. **Block VQ quantizes B
+coordinates jointly** ("adaptive binning"), recovering it. At matched bytes/vector
+(synthetic, raw recall@10, no rerank):
+
+| d | rate | scalar TurboQuant | **block VQ** | Δ |
+|---|---|---|---|---|
+| 128 | 2-bit | 0.463 | **0.599** | **+13.6 pp** |
+| 768 | 2-bit | 0.597 | **0.716** | **+11.9 pp** |
+| 1536 | 2-bit | 0.664 | — | (gap shrinks with d) |
+
+The gain is largest exactly where scalar TurboQuant is weakest. We also
+implemented the ScaNN anisotropic loss and found it *does not help here* — the
+length-renormalization already corrects the parallel residual it targets (see
+the theory docs for the full negative result).
+
+> **Status.** The quantizer is implemented and benchmarked **standalone**
+> (`src/turbo_quant.hpp`, `src/block_quant.hpp`). Wiring it into the live index
+> (`src/dynamic_ivf.cpp`) as a `quant="tq"` mode that replaces IVFPQ — and the
+> E8 / OPQ extensions — are in progress. See
+> [QUANTIZATION_GOAL.md](QUANTIZATION_GOAL.md).
+
+### Reproduce everything
+
+```bash
+python3 benchmarks/reproduce.py            # build, deps, download, run, report
+python3 benchmarks/benchmark_vs_turbovec.py            # Copenhagen vs TurboVec, 3 axes
+python3 benchmarks/benchmark_ivf_churn.py --with-turbovec   # TurboVec as a churn column
+```
+
+Full benchmark + reproduction guide: [docs/source/benchmarks.rst](docs/source/benchmarks.rst).
+
+---
+
 ## Repository layout
 
 ```
-src/                  C++ extension (dynamic_ivf.cpp, build.sh)
+src/                  C++ extension + quantizers
+  dynamic_ivf.cpp                 The dynamic IVF index (insert/delete/split, BLAS)
+  turbo_quant.hpp                 Scalar TurboQuant (rotation, Lloyd–Max, TQ+, renorm)
+  block_quant.hpp                 Block/sub-vector VQ + ScaNN anisotropic codebook
+  tq_standalone_test.cpp          Recall-per-byte vs exact (dim sweep)
+  tq_block_test.cpp               Block VQ vs scalar at matched bytes
+  tq_aniso_test.cpp               Anisotropic eta sweep
 python/core/          Python wrapper (CopenhagenIndex), __init__.py, copenhagen.so
 benchmarks/           Benchmark scripts:
+  reproduce.py                    One-shot: build, deps, download, run, report
+  benchmark_vs_turbovec.py        Copenhagen vs TurboVec — compression/recall/dynamics
+  _turbovec_runner.py             Shared TurboVec baseline adapter
   benchmark_drift.py              MNIST → Fashion drift (one-shot + --per-cluster)
   benchmark_drift_streaming.py    Gradual streaming drift (batches over time)
-  benchmark_hnsw_churn.py         30% churn vs HNSW
-  benchmark_ivf_churn.py          30% churn vs FAISS IVF
+  benchmark_hnsw_churn.py         30% churn vs HNSW          (+ --with-turbovec)
+  benchmark_ivf_churn.py          30% churn vs FAISS IVF     (+ --with-turbovec)
   benchmark_vs_faiss.py           Static recall and throughput
+docs/source/          Sphinx docs: theory.rst (math + references), benchmarks.rst
 tests/                smoke_test.py, stress_test.py, test_gpu.py, bench_gpu.py, bench_search.py
                       GPU and FAISS tests must run separately: pytest -m gpu / pytest -m faiss
 data/                 Dataset storage (MNIST, Fashion-MNIST, SIFT)
@@ -215,5 +284,9 @@ results/              Benchmark output (JSON)
 ## Credits
 
 - **arXiv:2604.00271** — van der Hoog, Reinstädtler, Rotenberg (IT University of Copenhagen). The logarithmic-method bucket structure, quarter-full invariant, and tombstone correctness argument for ranked queries directly informed the Copenhagen design.
-- **FAISS** (Facebook AI Research) — IVF baseline for all benchmarks.
+- **FAISS** (Facebook AI Research) — IVF / IVFPQ baseline for all benchmarks.
+- **TurboVec** ([github.com/RyanCodrai/turbovec](https://github.com/RyanCodrai/turbovec)) — the TurboQuant scalar quantizer (attributed to Google Research). Compression baseline; its algorithm (rotation + Lloyd–Max + RaBitQ-style renormalization + TQ+) was reimplemented from scratch in C++ here (no Rust reused) and extended with block VQ.
+- **RaBitQ** (Gao & Long, SIGMOD 2024) — length-renormalized unbiased inner-product estimator underlying the per-vector scale.
+- **ScaNN** (Guo et al., ICML 2020) — anisotropic quantization loss (implemented and evaluated; see theory docs).
+- **Product Quantization** (Jégou et al., TPAMI 2011) — the sub-vector codebook + LUT layout block VQ adopts.
 - **AMPI** ([github.com/sashakolpakov/ampi](https://github.com/sashakolpakov/ampi)) — Adaptive multi-projection index with per-cluster Oja drift detection. Recommended when directional drift signals are needed rather than pure insert throughput; used as comparison baseline in drift benchmarks.
