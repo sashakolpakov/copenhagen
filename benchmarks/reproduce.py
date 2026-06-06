@@ -24,6 +24,7 @@ Usage
   python3 benchmarks/reproduce.py --skip-data     # skip dataset downloads
 """
 import argparse
+import os
 import datetime as _dt
 import shutil
 import subprocess
@@ -38,6 +39,13 @@ FIGS = REPO / "figures"
 RESULTS = BENCH / "results"
 LOGS = RESULTS / "logs"
 PY = sys.executable
+
+
+try:
+    import turbovec as _tv  # noqa: F401
+    _HAS_TURBOVEC = True
+except Exception:  # noqa: BLE001
+    _HAS_TURBOVEC = False
 
 
 def sh(cmd, cwd=REPO, timeout=None, env=None):
@@ -76,17 +84,21 @@ def build_ext():
     print(f"  build.sh: {'OK' if ok else 'FAILED'} ({secs:.1f}s)")
     if not ok:
         print(out[-1500:])
+    # Integrated block-VQ pybind module (the Copenhagen-TQ row in vs_turbovec).
+    ok2, out2, _ = sh(["bash", str(SRC / "build_block_vq.sh")], timeout=600)
+    print(f"  build_block_vq.sh: {'OK' if ok2 else 'FAILED'}")
+    if not ok2:
+        print(out2[-1500:])
     return ok
 
 
 # The standalone C++ quantization harnesses (compression section).
 QUANT_TESTS = [
     ("tq_recall_per_byte", "tq_standalone_test.cpp",
-     "Scalar TurboQuant recall-per-byte vs exact (dim sweep 128/768/1536)"),
+     "Scalar TurboQuant recall-per-byte vs exact + rerank@200 (dim sweep 128/768/1536)"),
     ("tq_block_vs_scalar", "tq_block_test.cpp",
      "Block-VQ vs scalar at MATCHED bytes/vector (lever #1)"),
-    ("tq_anisotropic", "tq_aniso_test.cpp",
-     "ScaNN anisotropic eta-sweep vs MSE block-VQ (lever #2)"),
+    # (ScaNN anisotropic test lives on the experiments/anisotropic branch — culled from main.)
 ]
 
 
@@ -106,15 +118,17 @@ def build_quant_harnesses():
 # ─────────────────────────── benchmark registry ─────────────────────────────
 def dynamics_benches(quick):
     churn_args = (["--n", "8000", "--rounds", "4"] if quick else [])
+    # TurboVec joins the churn tables as a +rebuild column (normalizes data).
+    tv_arg = ["--with-turbovec"] if _HAS_TURBOVEC else []
     return [
         dict(key="ivf_churn", section="dynamics",
-             title="Streaming churn vs FAISS IVF (30% delete/round)",
-             cmd=[PY, str(BENCH / "benchmark_ivf_churn.py"), *churn_args],
-             timeout=1200, fig="ivf_churn.png", needs=[]),
+             title="Streaming churn vs FAISS IVF + TurboVec (30% delete/round)",
+             cmd=[PY, str(BENCH / "benchmark_ivf_churn.py"), *churn_args, *tv_arg],
+             timeout=1800, fig="ivf_churn.png", needs=[]),
         dict(key="hnsw_churn", section="dynamics",
-             title="Streaming churn vs HNSW (30% delete/round)",
-             cmd=[PY, str(BENCH / "benchmark_hnsw_churn.py"), *churn_args],
-             timeout=1200, fig="hnsw_churn.png", needs=[]),
+             title="Streaming churn vs HNSW + TurboVec (30% delete/round)",
+             cmd=[PY, str(BENCH / "benchmark_hnsw_churn.py"), *churn_args, *tv_arg],
+             timeout=1800, fig="hnsw_churn.png", needs=[]),
         dict(key="vs_faiss_gauss", section="dynamics",
              title="Static recall / throughput vs FAISS (synthetic Gaussian)",
              cmd=[PY, str(BENCH / "benchmark_vs_faiss.py"), "gauss"],
@@ -233,6 +247,9 @@ def main():
     ap.add_argument("--only", default="", help="comma list: dynamics,compression,drift")
     ap.add_argument("--skip-deps", action="store_true")
     ap.add_argument("--skip-data", action="store_true")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="run this many benchmarks concurrently (each capped to "
+                         "cores/jobs threads). On a 30-vCPU box, --jobs 6 is a good start.")
     args = ap.parse_args()
     only = set(s.strip() for s in args.only.split(",") if s.strip())
     want = lambda s: (not only) or (s in only)  # noqa: E731
@@ -265,19 +282,47 @@ def main():
         benches += dynamics_benches(args.quick)
     if want("drift"):
         benches += drift_benches(args.quick)
-    results = []
+    runnable, results = [], []
     for b in benches:
         missing = [d for d in b["needs"] if not have_dataset(d)]
         if missing:
             print(f"  - {b['key']}: SKIP (missing {missing})")
             results.append({**b, "ok": False, "skipped": f"missing data {missing}",
                             "output": "", "secs": 0.0})
-            continue
-        print(f"  - {b['key']} …", end="", flush=True)
-        ok, out, secs = sh(b["cmd"], timeout=b["timeout"])
+        else:
+            runnable.append(b)
+
+    # Per-job thread cap so concurrent jobs don't oversubscribe the cores; each
+    # job's FAISS/BLAS/OpenMP still uses `per_job` threads. cores/jobs is the
+    # natural split (min 1).
+    cores = os.cpu_count() or 1
+    per_job = max(1, cores // max(1, args.jobs))
+
+    def run_one(b):
+        env = dict(os.environ)
+        for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+                  "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            env[k] = str(per_job)
+        ok, out, secs = sh(b["cmd"], timeout=b["timeout"], env=env)
         (LOGS / f"{b['key']}.log").write_text(out)
-        print(f" {'ok' if ok else 'FAIL'} ({secs:.0f}s)")
-        results.append({**b, "ok": ok, "output": out, "secs": secs})
+        return {**b, "ok": ok, "output": out, "secs": secs}
+
+    if args.jobs > 1 and len(runnable) > 1:
+        print(f"  running {len(runnable)} benchmarks, {args.jobs} concurrent "
+              f"× {per_job} threads each ({cores} cores)")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+            futs = {ex.submit(run_one, b): b for b in runnable}
+            for f in as_completed(futs):
+                r = f.result()
+                print(f"  - {r['key']}: {'ok' if r['ok'] else 'FAIL'} ({r['secs']:.0f}s)")
+                results.append(r)
+    else:
+        for b in runnable:
+            print(f"  - {b['key']} …", end="", flush=True)
+            r = run_one(b)
+            print(f" {'ok' if r['ok'] else 'FAIL'} ({r['secs']:.0f}s)")
+            results.append(r)
 
     # 4. compression harnesses
     quant_results = []
