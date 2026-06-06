@@ -69,7 +69,9 @@ def sh(cmd, cwd=REPO, timeout=None, env=None):
 def ensure_deps():
     need = []
     for mod, pkg in [("faiss", "faiss-cpu"), ("hnswlib", "hnswlib"),
-                     ("h5py", "h5py"), ("turbovec", "turbovec")]:
+                     ("h5py", "h5py"), ("turbovec", "turbovec"),
+                     ("matplotlib", "matplotlib"), ("pybind11", "pybind11"),
+                     ("numpy", "numpy")]:
         try:
             __import__(mod)
         except ImportError:
@@ -265,7 +267,14 @@ def main():
         build_ext()
     quant_built = build_quant_harnesses() if want("compression") else []
 
-    # 2. data
+    # 2. data — repair the data dir first (the repo ships `data` as a symlink to
+    # a sibling checkout; on a fresh box that target is absent, so make it a real
+    # directory before downloading).
+    data_dir = REPO / "data"
+    if data_dir.is_symlink() and not data_dir.exists():
+        data_dir.unlink()
+    if not data_dir.exists():
+        data_dir.mkdir(parents=True, exist_ok=True)
     needed = set()
     if want("dynamics"):
         needed |= {"sift"}

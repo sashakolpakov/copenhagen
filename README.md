@@ -242,8 +242,18 @@ the theory docs for the full negative result).
 
 ### Reproduce everything
 
+**Push-button (Docker, self-contained)** — from a fresh clone on a Linux box:
+
 ```bash
-python3 benchmarks/reproduce.py            # build, deps, download, run, report
+bash run_benchmarks.sh 12        # installs Docker if needed, builds the image,
+                                 # downloads all datasets, runs every benchmark ×
+                                 # method on 12 concurrent jobs → results/REPORT_latest.md
+```
+
+**Or directly:**
+
+```bash
+python3 benchmarks/reproduce.py --jobs 6   # build, deps, download, run, report
 python3 benchmarks/benchmark_vs_turbovec.py            # Copenhagen vs TurboVec, 3 axes
 python3 benchmarks/benchmark_ivf_churn.py --with-turbovec   # TurboVec as a churn column
 ```
