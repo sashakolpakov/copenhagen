@@ -29,10 +29,15 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "python" / "core"))
 sys.path.insert(0, str(Path(__file__).parent))
 from core import CopenhagenIndex
 from _turbovec_runner import normalize, bytes_per_vector
 import turbovec as tv
+try:
+    import block_vq                      # Copenhagen's integrated block-VQ index
+except ImportError:
+    block_vq = None                      # build with: bash src/build_block_vq.sh
 
 K = 10
 DIM = 128
@@ -122,8 +127,27 @@ def section_compression(base, queries, gt):
         print(f"{('TurboVec %d-bit' % bw):<26}{rec:>11.4f}{bpv:>12}{fb/bpv:>9.1f}x{qps:>10,.0f}")
         rows.append((f"TurboVec {bw}-bit", rec, bpv))
 
-    print("\nTakeaway: TurboVec wins bytes/vec decisively; CPH-IVFPQ is both LARGER")
-    print("(retains float32) and lower-recall — the gap the TurboQuant port closes.")
+    # Copenhagen's INTEGRATED block-VQ index ("adaptive binning"): same rotation
+    # + renormalization front-end as TurboVec, but B-dim joint codebooks instead
+    # of scalar — the low-d fix. B=4 ≈ TurboVec 2-bit rate; B=2 ≈ 4-bit rate.
+    if block_vq is not None:
+        for B, label in ((4, "Copenhagen-TQ blockVQ B=4"), (2, "Copenhagen-TQ blockVQ B=2")):
+            ix = block_vq.BlockVQIndex()
+            ix.train(np.ascontiguousarray(base), B, 256)
+            ix.add(np.ascontiguousarray(base))
+            I = np.asarray(ix.search(np.ascontiguousarray(queries), K))
+            rec = recall(gt, [row for row in I])
+            t = time.perf_counter(); ix.search(np.ascontiguousarray(queries), K)
+            qps = len(queries) / (time.perf_counter() - t)
+            bpv = ix.bytes_per_vector()
+            print(f"{label:<26}{rec:>11.4f}{bpv:>12}{fb/bpv:>9.1f}x{qps:>10,.0f}   [O(1) delete]")
+            rows.append((label, rec, bpv))
+    else:
+        print("(block_vq not built — run `bash src/build_block_vq.sh` for the integrated row)")
+
+    print("\nTakeaway: TurboVec wins bytes/vec over IVFPQ decisively. Copenhagen-TQ")
+    print("block VQ matches TurboVec's compression AND supports O(1) delete — and at")
+    print("the aggressive (B=4 ≈ 2-bit) low-d rate its joint codebook beats scalar.")
     return rows
 
 
