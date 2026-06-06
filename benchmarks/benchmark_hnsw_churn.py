@@ -39,7 +39,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
+sys.path.insert(0, str(Path(__file__).parent))
 from core import CopenhagenIndex
+
+# TurboVec baseline (optional, --with-turbovec); flat MIPS index, no native
+# delete → joins as a "+rebuild" runner. Enabling it normalizes the data so
+# L2-NN ≡ MIPS (fair cross-metric comparison).
+WITH_TURBOVEC = False
+try:
+    from _turbovec_runner import TurboVecRebuildRunner, normalize as _l2norm
+except Exception:  # noqa: BLE001
+    TurboVecRebuildRunner = None
 
 # ── defaults ──────────────────────────────────────────────────────────────────
 N_INIT        = 50_000
@@ -230,11 +240,15 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
     # Initial data
     data_init = rng.standard_normal((n_init, d)).astype(np.float32)
     queries   = rng.standard_normal((n_queries, d)).astype(np.float32)
+    if WITH_TURBOVEC:
+        data_init = _l2norm(data_init)   # L2-NN ≡ MIPS, fair to TurboVec
+        queries   = _l2norm(queries)
 
     # Build all three runners
     cph   = CopenhagenRunner(d, CPH_N_CLUSTERS, CPH_NPROBE, CPH_SOFT_K)
     hnsw_f = HNSWFilterRunner(d, HNSW_M, HNSW_EF_BUILD, HNSW_EF_SEARCH)
     hnsw_r = HNSWRebuildRunner(d, HNSW_M, HNSW_EF_BUILD, HNSW_EF_SEARCH)
+    tvec   = TurboVecRebuildRunner(d, bit_width=4) if WITH_TURBOVEC else None
 
     print("Building initial indexes …")
     t0 = time.perf_counter()
@@ -242,6 +256,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
     init_ids_hnsw_f = hnsw_f.add(data_init)
     init_ids_hnsw_r = hnsw_r.add(data_init)
     hnsw_r.rebuild()
+    if tvec is not None:
+        tvec.add(data_init); tvec.rebuild()
     t_build = time.perf_counter() - t0
     print(f"  build time: {t_build:.2f}s")
 
@@ -257,6 +273,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
               f"{'CPH ins/s':>10}  {'HNSW-r ins/s':>13}  "
               f"{'CPH del/s':>10}  "
               f"{'CPH QPS':>8}  {'HNSW-f QPS':>11}  {'HNSW-r QPS':>11}")
+    if WITH_TURBOVEC:
+        header += f"  {'TVec R@10':>10}  {'TVec rbld/s':>12}"
     print(header)
     print("  " + "-" * (len(header) - 2))
 
@@ -286,6 +304,7 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
         rec_cph    = eval_recall(cph)
         rec_hnsw_f = eval_recall(hnsw_f)
         rec_hnsw_r = eval_recall(hnsw_r)
+        rec_tvec   = eval_recall(tvec) if tvec is not None else None
         qps_cph    = eval_qps(cph)
         qps_hnsw_f = eval_qps(hnsw_f)
         qps_hnsw_r = eval_qps(hnsw_r)
@@ -298,6 +317,7 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
             rec_cph=rec_cph,
             rec_hnsw_f=rec_hnsw_f,
             rec_hnsw_r=rec_hnsw_r,
+            rec_tvec=rec_tvec,
             qps_cph=qps_cph,
             qps_hnsw_f=qps_hnsw_f,
             qps_hnsw_r=qps_hnsw_r,
@@ -308,6 +328,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
 
         # ── Insert new batch ──
         new_vecs = rng.standard_normal((batch_insert, d)).astype(np.float32)
+        if WITH_TURBOVEC:
+            new_vecs = _l2norm(new_vecs)
         start_global = len(all_vecs)
         all_vecs.extend(new_vecs)
 
@@ -320,6 +342,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
         _                = None
         new_ids_hnsw_r = hnsw_r.add(new_vecs)
         t_ins_hnsw_r = time.perf_counter() - t0  # rebuild runner tracks inserts only
+        if tvec is not None:
+            tvec.add(new_vecs)
 
         live_ids_cph.extend(new_ids_cph)
         live_ids_hnsw_f.extend(new_ids_hnsw_f)
@@ -339,6 +363,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
 
         hnsw_f.delete(to_delete)
         hnsw_r.delete(to_delete)
+        if tvec is not None:
+            tvec.delete(to_delete)
 
         live_ids_cph    = live_ids_cph[n_delete:]
         live_ids_hnsw_f = live_ids_hnsw_f[n_delete:]
@@ -348,12 +374,19 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
 
         # ── Rebuild HNSW (this is the expensive step for hnsw_r) ──
         hnsw_r.rebuild()
+        tv_rate = 0.0
+        if tvec is not None:
+            tvec.rebuild()
+            tv_rate = (tvec.n_live() / tvec.last_rebuild_s) if tvec.last_rebuild_s else 0.0
 
-        print(f"  {rnd+1:>5}  {len(live_ids_cph):>6,}  {pct_del:>4.0%}  "
-              f"{rec_cph:>9.3f}  {rec_hnsw_f:>17.3f}  {rec_hnsw_r:>18.3f}  "
-              f"{ins_per_s_cph:>10,.0f}  {ins_per_s_hnsw_r:>13,.0f}  "
-              f"{del_per_s_cph:>10,.0f}  "
-              f"{qps_cph:>8,.0f}  {qps_hnsw_f:>11,.0f}  {qps_hnsw_r:>11,.0f}")
+        row = (f"  {rnd+1:>5}  {len(live_ids_cph):>6,}  {pct_del:>4.0%}  "
+               f"{rec_cph:>9.3f}  {rec_hnsw_f:>17.3f}  {rec_hnsw_r:>18.3f}  "
+               f"{ins_per_s_cph:>10,.0f}  {ins_per_s_hnsw_r:>13,.0f}  "
+               f"{del_per_s_cph:>10,.0f}  "
+               f"{qps_cph:>8,.0f}  {qps_hnsw_f:>11,.0f}  {qps_hnsw_r:>11,.0f}")
+        if WITH_TURBOVEC:
+            row += f"  {rec_tvec:>10.3f}  {tv_rate:>12,.0f}"
+        print(row)
 
     return history
 
@@ -416,12 +449,19 @@ if __name__ == "__main__":
     ap.add_argument("--insert",  type=int, default=BATCH_INSERT,  help="Vectors inserted per round")
     ap.add_argument("--delete",  type=float, default=DELETE_FRAC, help="Fraction deleted per round")
     ap.add_argument("--seed",    type=int, default=42)
+    ap.add_argument("--with-turbovec", action="store_true",
+                    help="add TurboVec+rebuild column (normalizes data so L2-NN ≡ MIPS)")
     args = ap.parse_args()
 
     N_INIT       = args.n
     ROUNDS       = args.rounds
     BATCH_INSERT = args.insert
     DELETE_FRAC  = args.delete
+    if args.with_turbovec:
+        if TurboVecRebuildRunner is None:
+            sys.exit("--with-turbovec requested but `turbovec` is not installed "
+                     "(pip install turbovec)")
+        WITH_TURBOVEC = True
 
     rng = np.random.default_rng(args.seed)
     history = run_simulation(rng, N_INIT, D, ROUNDS, BATCH_INSERT, DELETE_FRAC,
