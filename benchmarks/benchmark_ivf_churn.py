@@ -34,7 +34,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
+sys.path.insert(0, str(Path(__file__).parent))
 from core import CopenhagenIndex
+
+# TurboVec baseline (optional, --with-turbovec). It's a flat MIPS index with no
+# native delete, so it joins as a "+rebuild" runner like FAISS-rebuild; enabling
+# it normalizes the data so L2-NN ≡ MIPS (fair cross-metric comparison).
+WITH_TURBOVEC = False
+try:
+    from _turbovec_runner import TurboVecRebuildRunner, normalize as _l2norm
+except Exception:  # noqa: BLE001
+    TurboVecRebuildRunner = None
 
 # ── defaults ──────────────────────────────────────────────────────────────────
 N_INIT        = 50_000
@@ -277,11 +287,16 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
 
     data_init = rng.standard_normal((n_init, d)).astype(np.float32)
     queries   = rng.standard_normal((n_queries, d)).astype(np.float32)
+    if WITH_TURBOVEC:
+        # L2-normalize so L2-NN ≡ MIPS — fair to TurboVec's inner-product metric.
+        data_init = _l2norm(data_init)
+        queries   = _l2norm(queries)
 
     cph    = CopenhagenRunner(d, CPH_N_CLUSTERS, CPH_NPROBE, CPH_SOFT_K, CPH_SPLIT_THRESHOLD)
     ivf_f  = FAISSIVFFilterRunner(d, CPH_N_CLUSTERS, CPH_NPROBE)
     ivf_r  = FAISSIVFRebuildRunner(d, CPH_N_CLUSTERS, CPH_NPROBE)
     ivfpq  = FAISSIVFPQFilterRunner(d, CPH_N_CLUSTERS, CPH_NPROBE, PQ_M, PQ_NBITS)
+    tvec   = TurboVecRebuildRunner(d, bit_width=4) if WITH_TURBOVEC else None
 
     print("Building initial indexes …")
     t0 = time.perf_counter()
@@ -290,6 +305,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
     live_ids_ivf_r = ivf_r.add(data_init)
     live_ids_ivfpq = ivfpq.add(data_init)
     ivf_r.rebuild()
+    if tvec is not None:
+        tvec.add(data_init); tvec.rebuild()
     print(f"  build time: {time.perf_counter() - t0:.2f}s")
 
     live_ids_cph   = list(live_ids_cph)
@@ -304,6 +321,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
               f"{'CPH ins/s':>10}  {'IVF-r ins/s':>12}  "
               f"{'CPH del/s':>10}  "
               f"{'CPH QPS':>8}  {'IVF-f QPS':>10}  {'IVFPQ QPS':>10}")
+    if WITH_TURBOVEC:
+        header += f"  {'TVec R@10':>10}  {'TVec rbld/s':>12}"
     print(header)
     print("  " + "-" * (len(header) - 2))
 
@@ -333,6 +352,7 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
         rec_ivf_f  = eval_recall(ivf_f)
         rec_ivf_r  = eval_recall(ivf_r)
         rec_ivfpq  = eval_recall(ivfpq)
+        rec_tvec   = eval_recall(tvec) if tvec is not None else None
         qps_cph    = eval_qps(cph)
         qps_ivf_f  = eval_qps(ivf_f)
         qps_ivf_r  = eval_qps(ivf_r)
@@ -342,6 +362,7 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
         history.append(dict(
             round=rnd, n_live=len(live_ids_cph), pct_del=pct_del,
             rec_cph=rec_cph, rec_ivf_f=rec_ivf_f, rec_ivf_r=rec_ivf_r, rec_ivfpq=rec_ivfpq,
+            rec_tvec=rec_tvec,
             qps_cph=qps_cph, qps_ivf_f=qps_ivf_f, qps_ivf_r=qps_ivf_r, qps_ivfpq=qps_ivfpq,
         ))
 
@@ -350,6 +371,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
 
         # insert
         new_vecs = rng.standard_normal((batch_insert, d)).astype(np.float32)
+        if WITH_TURBOVEC:
+            new_vecs = _l2norm(new_vecs)   # keep whole corpus normalized (L2-NN ≡ MIPS)
         all_vecs.extend(new_vecs)
 
         t0 = time.perf_counter()
@@ -361,6 +384,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
         new_ids_ivf_r = ivf_r.add(new_vecs)
         new_ids_ivfpq = ivfpq.add(new_vecs)
         t_ins_ivf_r = time.perf_counter() - t0
+        if tvec is not None:
+            tvec.add(new_vecs)
 
         live_ids_cph.extend(new_ids_cph)
         live_ids_ivf_f.extend(new_ids_ivf_f)
@@ -382,6 +407,8 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
         ivf_f.delete(to_delete)
         ivf_r.delete(to_delete)
         ivfpq.delete(to_delete)
+        if tvec is not None:
+            tvec.delete(to_delete)
 
         live_ids_cph   = live_ids_cph[n_delete:]
         live_ids_ivf_f = live_ids_ivf_f[n_delete:]
@@ -391,12 +418,19 @@ def run_simulation(rng, n_init, d, rounds, batch_insert, delete_frac, n_queries,
         del_per_s_cph = n_delete / t_del_cph
 
         ivf_r.rebuild()
+        tv_rate = 0.0
+        if tvec is not None:
+            tvec.rebuild()   # no native delete → full rebuild from live set
+            tv_rate = (tvec.n_live() / tvec.last_rebuild_s) if tvec.last_rebuild_s else 0.0
 
-        print(f"  {rnd+1:>5}  {len(live_ids_cph):>6,}  {pct_del:>4.0%}  "
-              f"{rec_cph:>9.3f}  {rec_ivf_f:>14.3f}  {rec_ivf_r:>14.3f}  {rec_ivfpq:>16.3f}  "
-              f"{ins_per_s_cph:>10,.0f}  {ins_per_s_ivf_r:>12,.0f}  "
-              f"{del_per_s_cph:>10,.0f}  "
-              f"{qps_cph:>8,.0f}  {qps_ivf_f:>10,.0f}  {qps_ivfpq:>10,.0f}")
+        row = (f"  {rnd+1:>5}  {len(live_ids_cph):>6,}  {pct_del:>4.0%}  "
+               f"{rec_cph:>9.3f}  {rec_ivf_f:>14.3f}  {rec_ivf_r:>14.3f}  {rec_ivfpq:>16.3f}  "
+               f"{ins_per_s_cph:>10,.0f}  {ins_per_s_ivf_r:>12,.0f}  "
+               f"{del_per_s_cph:>10,.0f}  "
+               f"{qps_cph:>8,.0f}  {qps_ivf_f:>10,.0f}  {qps_ivfpq:>10,.0f}")
+        if WITH_TURBOVEC:
+            row += f"  {rec_tvec:>10.3f}  {tv_rate:>12,.0f}"
+        print(row)
 
     return history
 
@@ -462,12 +496,19 @@ if __name__ == "__main__":
     ap.add_argument("--insert", type=int,   default=BATCH_INSERT, help="Vectors inserted per round")
     ap.add_argument("--delete", type=float, default=DELETE_FRAC,  help="Fraction deleted per round")
     ap.add_argument("--seed",   type=int,   default=42)
+    ap.add_argument("--with-turbovec", action="store_true",
+                    help="add TurboVec+rebuild column (normalizes data so L2-NN ≡ MIPS)")
     args = ap.parse_args()
 
     N_INIT       = args.n
     ROUNDS       = args.rounds
     BATCH_INSERT = args.insert
     DELETE_FRAC  = args.delete
+    if args.with_turbovec:
+        if TurboVecRebuildRunner is None:
+            sys.exit("--with-turbovec requested but `turbovec` is not installed "
+                     "(pip install turbovec)")
+        WITH_TURBOVEC = True
 
     rng = np.random.default_rng(args.seed)
     history = run_simulation(rng, N_INIT, D, ROUNDS, BATCH_INSERT, DELETE_FRAC,
