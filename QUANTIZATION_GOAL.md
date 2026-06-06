@@ -224,16 +224,21 @@ flops than LU; B is tiny by the SIMD-LUT design so BLAS/LAPACK isn't warranted.
 | d=128  | **0.6007** | 0.6005 | 0.5987  | 0.5963 | 0.5912 | 0.5847 | 0.5682  |
 | d=768  | **0.7248** | 0.7194 | 0.7164  | 0.7176 | 0.7130 | 0.7012 | 0.6144  |
 
-**η>1 (classic ScaNN) monotonically HURTS; η<1 gives a small consistent gain
-(best ≈ η=0.25: +0.2pp @ d128, +0.8pp @ d768).** Mechanism: our estimator already
+**η>1 (classic ScaNN) monotonically HURTS.** Mechanism: our estimator already
 applies RaBitQ length-renormalization `scale = ‖v‖/⟨u_rot,x̂⟩`, which *explicitly
 divides out the reconstruction's parallel/norm error*. ScaNN's η>1 exists to
 protect that same parallel component for indexes that DON'T renormalize — stacked
 on renormalization it double-corrects and wastes codebook resolution. What
-governs ranking here is the **orthogonal/angular** accuracy of x̂, so the correct
-anisotropy is η<1 (down-weight parallel). Bit-budget takeaway: spend bits on
-**joint structure (block VQ, +12–14pp)** and angular accuracy, not on parallel
-reweighting. Ship η≈0.25 as a cheap default; it's strictly second-order.
+governs ranking here is the **orthogonal/angular** accuracy of x̂, pointing to η<1.
+
+**η<1 — culled from main (5-seed verdict).** A single seed hinted at a gain; the
+significance test `src/tq_aniso_signif.cpp` (5 seeds, varying data + init) shows
+it is marginal at d=128 (+0.0028 ± 0.0017, ~1.6σ) and **net negative** at d=768
+(−0.0035 ± 0.0026, 4/5 seeds). The anisotropic codebook does not earn its
+training cost; it was **removed from main and preserved on the
+`experiments/anisotropic` branch**. Bit-budget takeaway: spend bits on **joint
+structure (block VQ, +12–14pp)**, not on parallel reweighting — once you
+renormalize, the parallel direction is already handled.
 
 Open next: (i) does block VQ + rerank reach ~1.0 like scalar did? (ii) residual
 byte (lever #3); (iii) correct anisotropic; (iv) Kc=16 (4-bit codes) for the

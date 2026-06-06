@@ -196,11 +196,11 @@ Full tables in [BENCHMARKS.md](BENCHMARKS.md).
 ## Compression: TurboQuant + block VQ (vs TurboVec)
 
 Copenhagen wins **dynamics**; [TurboVec](https://github.com/RyanCodrai/turbovec)
-(the TurboQuant scalar quantizer) wins **compression**. The aim is to have both
-in one index. We reimplemented TurboQuant from scratch in C++ (algorithm only —
-no Rust) and added a **block / sub-vector vector-quantization** front-end that
-fixes TurboQuant's low-dimension weakness. Full derivation and references:
-[docs/source/theory.rst](docs/source/theory.rst).
+— the [TurboQuant](https://arxiv.org/abs/2504.19874) scalar quantizer — wins
+**compression**. The aim is to have both in one index. We reimplemented
+TurboQuant in C++ and added a **block / sub-vector vector-quantization**
+front-end that fixes TurboQuant's low-dimension weakness. Full derivation and
+references: [docs/source/theory.rst](docs/source/theory.rst).
 
 **Head-to-head on normalized SIFT-128 (50k), recall@10 vs bytes/vector:**
 
@@ -285,7 +285,8 @@ results/              Benchmark output (JSON)
 
 - **arXiv:2604.00271** — van der Hoog, Reinstädtler, Rotenberg (IT University of Copenhagen). The logarithmic-method bucket structure, quarter-full invariant, and tombstone correctness argument for ranked queries directly informed the Copenhagen design.
 - **FAISS** (Facebook AI Research) — IVF / IVFPQ baseline for all benchmarks.
-- **TurboVec** ([github.com/RyanCodrai/turbovec](https://github.com/RyanCodrai/turbovec)) — the TurboQuant scalar quantizer (attributed to Google Research). Compression baseline; its algorithm (rotation + Lloyd–Max + RaBitQ-style renormalization + TQ+) was reimplemented from scratch in C++ here (no Rust reused) and extended with block VQ.
+- **TurboQuant** (Zandieh et al., *Online Vector Quantization with Near-optimal Distortion Rate*, [arXiv:2504.19874](https://arxiv.org/abs/2504.19874), Google & NYU, ICLR 2026) — the scalar quantizer at the core of the compressed path: random rotation → Beta-concentrated coordinates → per-coordinate optimal scalar quantizer, with a QJL residual stage. Reimplemented in C++ here and extended with block VQ.
+- **TurboVec** ([github.com/RyanCodrai/turbovec](https://github.com/RyanCodrai/turbovec)) — Ryan Codrai's implementation of TurboQuant; compression baseline in the benchmarks.
 - **RaBitQ** (Gao & Long, SIGMOD 2024) — length-renormalized unbiased inner-product estimator underlying the per-vector scale.
 - **ScaNN** (Guo et al., ICML 2020) — anisotropic quantization loss (implemented and evaluated; see theory docs).
 - **Product Quantization** (Jégou et al., TPAMI 2011) — the sub-vector codebook + LUT layout block VQ adopts.

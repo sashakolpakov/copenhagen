@@ -6,7 +6,7 @@ Quantization theory: from TurboQuant to block VQ
 
 This chapter develops, from first principles, the quantization mathematics
 behind Copenhagen's compressed search path. It explains why the scalar
-TurboQuant scheme (as shipped in TurboVec [TurboVec]_) is near-optimal in high
+TurboQuant scheme [TurboQuant]_ (as shipped in TurboVec [TurboVec]_) is near-optimal in high
 dimension and *degrades in low dimension*, isolates the precise mechanism of
 that degradation, and derives the block / sub-vector vector-quantization (VQ)
 scheme Copenhagen uses to repair it. All claims are accompanied by the
@@ -53,9 +53,8 @@ distortion but how often the estimator preserves the true top-:math:`k`.
 The TurboQuant pipeline
 =======================
 
-TurboQuant [TurboVec]_ is the composition of four classical ideas. We restate
-each and give the exact estimator Copenhagen reimplements (in C++; no code is
-shared with the Rust original — only the algorithm).
+TurboQuant [TurboQuant]_ is the composition of four classical ideas. We restate
+each and give the exact estimator Copenhagen reimplements.
 
 1. Normalize and rotate
 -----------------------
@@ -288,13 +287,16 @@ align the data with the block structure).
    :class: note
 
    Implemented and measured: the random rotation, scalar Lloyd–Max with TQ+
-   calibration (:file:`src/turbo_quant.hpp`), trained block VQ, and the ScaNN
-   anisotropic codebook (:file:`src/block_quant.hpp`). **The** :math:`E_8`
-   **lattice and OPQ are not implemented** — they are named here as the next
-   reference points, not as results. The current block quantizer uses trained
-   :math:`k`-means with a *random* rotation. Bringing the quantizer into
-   :file:`src/dynamic_ivf.cpp` as a live ``quant`` mode (replacing IVFPQ) is
-   likewise pending; the measurements to date are from the standalone harnesses.
+   calibration (:file:`src/turbo_quant.hpp`), and trained block VQ
+   (:file:`src/block_quant.hpp`), exposed to Python as a flat compressed index
+   with :math:`O(1)` tombstone delete (:file:`src/block_quant_py.cpp`,
+   ``block_vq.BlockVQIndex``). The ScaNN anisotropic codebook was implemented,
+   found not to help, and **culled to the** ``experiments/anisotropic`` **branch**.
+   **Not implemented:** the :math:`E_8` lattice and OPQ (named as next reference
+   points, not results), and wiring the quantizer into
+   :file:`src/dynamic_ivf.cpp` as a first-class ``quant`` mode replacing IVFPQ
+   (the IVF + block-VQ combination is currently exercised through
+   ``BlockVQIndex``).
 
 The bit budget at low dimension is *not* the constraint: :math:`d=128` at 4 bits
 is only 64 bytes, so 6–8 effective bits/coordinate via block VQ still sits at
@@ -331,16 +333,23 @@ SPD for :math:`\eta\ge 1`). Copenhagen implements this exactly
 **The measured result is that** :math:`\eta>1` **does not help and large**
 :math:`\eta` **hurts** (e.g. :math:`d{=}128`, 2-bit: :math:`0.599` at
 :math:`\eta{=}1` falls to :math:`0.568` at :math:`\eta{=}100`). The reason is
-specific to our pipeline and is, we believe, a genuine observation: the
-length-renormalization :eq:`scale` *already divides out the parallel/norm
-component of the reconstruction error*. ScaNN's :math:`\eta>1` exists for
-indexes that do **not** renormalize; stacked on top of RaBitQ-style
-renormalization it double-corrects and wastes codebook resolution. What remains
-to govern ranking is the **orthogonal/angular** accuracy of :math:`\hat x`,
-which points to :math:`\eta<1`. Sweeping confirms a small, consistent gain there
-(best :math:`\eta\approx 0.25`: +0.2 pp at :math:`d{=}128`, +0.8 pp at
-:math:`d{=}768`). The practical takeaway for the bit budget: **spend bits on
-joint structure (block VQ) and angular accuracy, not on parallel reweighting.**
+specific to our pipeline: the length-renormalization :eq:`scale` *already divides
+out the parallel/norm component of the reconstruction error*. ScaNN's
+:math:`\eta>1` exists for indexes that do **not** renormalize; stacked on top of
+RaBitQ-style renormalization it double-corrects and wastes codebook resolution.
+What remains to govern ranking is the **orthogonal/angular** accuracy of
+:math:`\hat x`, which points to :math:`\eta<1`.
+
+A single seed suggested a small gain there; a **5-seed significance test**
+(:file:`src/tq_aniso_signif.cpp`, branch ``experiments/anisotropic``) settles it:
+at :math:`\eta{=}0.25` the gain is :math:`+0.0028\pm0.0017` at :math:`d{=}128`
+(marginal, :math:`\sim1.6\sigma`) and :math:`-0.0035\pm0.0026` at :math:`d{=}768`
+(net **negative**, 4/5 seeds). **The anisotropic codebook does not earn its
+training cost and was culled from main**; the full closed-form implementation is
+preserved on the ``experiments/anisotropic`` branch. The practical takeaway for
+the bit budget stands: **spend bits on joint structure (block VQ), not on
+parallel reweighting** — once you renormalize, the parallel direction is already
+handled.
 
 
 Integration with the dynamic index
@@ -369,10 +378,17 @@ block-VQ improvement that vanilla TurboVec lacks.
 References
 ==========
 
-.. [TurboVec] R. Codrai, *TurboVec*: a Rust vector-search index implementing the
-   TurboQuant scalar quantizer. https://github.com/RyanCodrai/turbovec
-   (TurboQuant attributed therein to Google Research). Algorithm reused here;
-   no source code is shared.
+.. [TurboQuant] A. Zandieh et al., "TurboQuant: Online Vector Quantization with
+   Near-optimal Distortion Rate," arXiv:2504.19874, Google & NYU, ICLR 2026.
+   https://arxiv.org/abs/2504.19874 — random rotation → Beta-concentrated
+   coordinates → per-coordinate optimal scalar quantizer (relying explicitly on
+   the *near-independence of coordinates in high dimension* that
+   :ref:`lowd` dissects), plus a 1-bit QJL residual stage. The algorithm
+   reimplemented and extended here.
+
+.. [TurboVec] R. Codrai, *TurboVec*: a vector-search index implementing
+   TurboQuant. https://github.com/RyanCodrai/turbovec — the compression baseline
+   in :ref:`benchmarks`.
 
 .. [RaBitQ] J. Gao and C. Long, "RaBitQ: Quantizing High-Dimensional Vectors
    with a Theoretical Error Bound for Approximate Nearest Neighbor Search,"

@@ -28,10 +28,10 @@ struct BlockVQIndex {
     int dim = 0;
 
     void train(py::array_t<float, py::array::c_style | py::array::forcecast> data,
-               int B, int Kc, bool aniso, float eta) {
+               int B, int Kc) {
         auto b = data.request();
         int N = (int)b.shape[0]; dim = (int)b.shape[1];
-        q.train((const float*)b.ptr, N, dim, B, Kc, aniso, eta);
+        q.train((const float*)b.ptr, N, dim, B, Kc);
     }
 
     // Encode and append. Returns the [first, last) id range assigned.
@@ -87,8 +87,7 @@ PYBIND11_MODULE(block_vq, m) {
     py::class_<BlockVQIndex>(m, "BlockVQIndex")
         .def(py::init<>())
         .def("train", &BlockVQIndex::train,
-             py::arg("data"), py::arg("B") = 4, py::arg("Kc") = 256,
-             py::arg("aniso") = false, py::arg("eta") = 1.0f)
+             py::arg("data"), py::arg("B") = 4, py::arg("Kc") = 256)
         .def("add", &BlockVQIndex::add)
         .def("remove", &BlockVQIndex::remove)
         .def("search", &BlockVQIndex::search, py::arg("queries"), py::arg("k") = 10)

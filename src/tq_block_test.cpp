@@ -78,16 +78,14 @@ int main() {
         }
 
         // ---- block VQ (block_quant.hpp), matched bitrate ----
-        struct Cfg{int B;bool aniso;const char* nm;};
+        struct Cfg{int B;const char* nm;};
         Cfg cfgs[] = {
-            {4,false,"block VQ Kc=256 MSE"},     // matches scalar 2-bit
-            {4,true ,"block VQ Kc=256 aniso"},
-            {2,false,"block VQ Kc=256 MSE"},     // matches scalar 4-bit
-            {2,true ,"block VQ Kc=256 aniso"},
+            {4,"block VQ Kc=256 MSE"},     // matches scalar 2-bit
+            {2,"block VQ Kc=256 MSE"},     // matches scalar 4-bit
         };
         for (auto& cf : cfgs) {
             BlockQuantizer bq; bq.seed=42;
-            bq.train(data.data(),n,dim,cf.B,256,cf.aniso,4.0f);
+            bq.train(data.data(),n,dim,cf.B,256);
             std::vector<uint16_t> codes((size_t)n*bq.nb);
             std::vector<float> sc(n), sq(n);
             for(int i=0;i<n;i++) bq.encode(&data[(size_t)i*dim],&codes[(size_t)i*bq.nb],&sc[i],&sq[i]);
