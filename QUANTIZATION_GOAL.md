@@ -10,9 +10,9 @@ problems:
 1. **It saves no memory.** The rerank step reads `clusters[c].vectors` — the full
    float32 vectors are still stored. PQ codes are added *on top*, so the index gets
    *bigger*, not smaller.
-2. **Recall collapses under real compression.** Our own BENCHMARKS.md shows IVFPQ
-   at 0.42–0.47 recall@10 at 16× compression (and 0.06–0.11 at 64×) — less than
-   half of Copenhagen's float path (0.93–0.95).
+2. **Recall collapses under real compression.** Our latest benchmark matrix shows
+   IVFPQ at 0.392–0.446 recall@10 at 16× compression under churn — less than
+   half of Copenhagen's float path (0.926–0.960).
 
 [TurboVec](https://github.com/RyanCodrai/turbovec) (Ryan Codrai) is the mirror
 image: a **compressed static-ish** flat index built on Google Research's
@@ -79,7 +79,7 @@ the existing `-march=armv8-a` build).
 ## Success criteria
 
 1. **Recall-per-byte beats IVFPQ decisively.** Target: ≥ 0.85 recall@10 at 8× (4-bit)
-   and ≥ 0.75 at 16× (2-bit) on SIFT/synthetic — vs IVFPQ's 0.42–0.47 at 16×.
+   and ≥ 0.75 at 16× (2-bit) on SIFT/synthetic — vs IVFPQ's 0.392–0.446 at 16×.
 2. **Real memory reduction.** Compressed clusters store no float32; index size drops
    ~`32/bits ×` vs the float path (minus small per-vector overhead).
 3. **Dynamics intact.** Insert / delete / soft_k / split all pass existing tests
@@ -91,15 +91,15 @@ the existing `-march=armv8-a` build).
 
 | dim  | 2-bit raw | 2-bit +rerank@200 | 4-bit raw | 4-bit +rerank | compression (2b/4b) |
 |------|-----------|-------------------|-----------|---------------|---------------------|
-| 128  | 0.449     | 0.987             | 0.814     | 1.000         | 12.8× / 7.1×        |
-| 768  | 0.575     | 0.999             | 0.869     | 1.000         | 15.4× / 7.8×        |
-| 1536 | 0.664     | 1.000             | 0.893     | 1.000         | 15.7× / 7.9×        |
+| 128  | 0.4581    | 0.9893            | 0.8183    | 1.0000        | 12.8× / 7.1×        |
+| 768  | 0.5990    | 1.0000            | 0.8700    | 1.0000        | 15.4× / 7.8×        |
+| 1536 | 0.6704    | 1.0000            | 0.9008    | 1.0000        | 15.7× / 7.9×        |
 
-**IVFPQ reference (BENCHMARKS.md): 0.42–0.47 @ 16×, 0.06–0.11 @ 64×.**
+**IVFPQ reference (latest churn matrix): 0.392–0.446 @ 16×.**
 
 Conclusions: (1) raw recall **rises with dimension** — exactly as the marginal
 theory predicts; d=128 (SIFT) is TurboQuant's worst case. (2) **4-bit
-compressed-only already beats IVFPQ decisively** (0.81–0.89 vs 0.42–0.47) at 7–8×
+compressed-only already beats IVFPQ decisively** (0.82–0.90 vs 0.392–0.446) at 7–8×
 with no float storage. (3) rerank@200 → ~0.99–1.00 at all bit widths, but rerank
 needs floats (see split tension). (4) TQ+ calibration adds a consistent +1–2pp.
 
@@ -193,10 +193,10 @@ RAW recall@10 (compressed-only, no float rerank), synthetic blobs:
 
 | d   | rate  | scalar (B=1) | block VQ B=… MSE | Δ        | bytes/vec |
 |-----|-------|--------------|------------------|----------|-----------|
-| 128 | 2-bit | 0.463        | **0.599** (B=4)  | **+13.6pp** | 40     |
-| 128 | 4-bit | 0.820        | **0.847** (B=2)  | +2.7pp   | 72        |
-| 768 | 2-bit | 0.597        | **0.716** (B=4)  | **+11.9pp** | 200    |
-| 768 | 4-bit | 0.868        | **0.897** (B=2)  | +2.9pp   | 392       |
+| 128 | 2-bit | 0.4581       | **0.5806** (B=4) | **+12.3pp** | 40     |
+| 128 | 4-bit | 0.8183       | **0.8412** (B=2) | +2.3pp   | 72        |
+| 768 | 2-bit | 0.5990       | **0.7288** (B=4) | **+13.0pp** | 200    |
+| 768 | 4-bit | 0.8700       | **0.8956** (B=2) | +2.6pp   | 392       |
 
 **Lever #1 confirmed.** Block VQ beats scalar at every operating point, and the
 win is *largest at 2-bit* (+12–14pp) — exactly the aggressive-compression / low-d

@@ -1,7 +1,8 @@
 # Copenhagen — Benchmark Results
 
-All benchmarks run on Apple M-series (Accelerate BLAS), d=128 synthetic Gaussian
-unless noted. Scripts are in `benchmarks/`.
+Latest published run: `benchmarks/results/REPORT_20260607_000220.md` on Linux
+`5.15.0-143-generic x86_64`, Python `3.11.15`, full mode. Scripts are in
+`benchmarks/`.
 
 ---
 
@@ -13,24 +14,24 @@ HNSW: M=32, efConstruction=64, efSearch=64.
 
 | Round | Live   | Del%  | CPH R@10 | HNSW+filter R@10 | HNSW+rebuild R@10 | CPH ins/s | HNSW-r ins/s | CPH del/s |
 |-------|--------|-------|----------|------------------|-------------------|-----------|--------------|-----------|
-| 1     | 35,700 |  0%   | 0.951    | 0.698            | 0.692             | 870,922   | 11,469       | 1,191,353 |
-| 2     | 25,690 | 30%   | 0.945    | 0.663            | 0.723             | 840,042   | 10,893       | 1,460,309 |
-| 3     | 18,683 | 51%   | 0.945    | 0.644            | 0.800             | 932,220   | 9,905        | 1,457,043 |
-| 4     | 13,779 | 65%   | 0.947    | 0.609            | 0.827             | 878,735   | 10,504       | 1,384,223 |
-| 5     | 10,346 | 74%   | 0.941    | 0.588            | 0.853             | 916,695   | 9,358        | 1,083,179 |
-| 6     | 7,943  | 81%   | 0.933    | 0.557            | 0.901             | 947,867   | 10,297       | 971,280   |
-| 7     | 6,261  | 86%   | 0.930    | 0.511            | 0.906             | 940,955   | 10,035       | 1,010,804 |
-| 8     | 5,083  | 89%   | 0.927    | 0.501            | 0.925             | 948,917   | 9,481        | 1,062,115 |
-| 9     | 4,259  | 91%   | 0.925    | 0.492            | 0.952             | 933,998   | 6,856        | 969,289   |
-| 10    | 3,682  | 93%   | 0.929    | 0.473            | 0.952             | 917,993   | 10,084       | 971,882   |
+| 1     | 35,700 |  0%   | 0.960    | 0.542            | 0.526             | 711,983   | 6,239        | 1,445,350 |
+| 2     | 25,690 | 30%   | 0.950    | 0.518            | 0.571             | 895,094   | 9,450        | 1,419,024 |
+| 3     | 18,683 | 51%   | 0.949    | 0.477            | 0.641             | 906,650   | 10,750       | 1,544,021 |
+| 4     | 13,779 | 65%   | 0.945    | 0.453            | 0.711             | 830,629   | 9,669        | 1,447,393 |
+| 5     | 10,346 | 74%   | 0.940    | 0.429            | 0.759             | 802,065   | 11,033       | 1,409,322 |
+| 6     | 7,943  | 81%   | 0.938    | 0.389            | 0.807             | 912,472   | 10,438       | 1,498,962 |
+| 7     | 6,261  | 86%   | 0.935    | 0.335            | 0.853             | 832,728   | 9,367        | 1,463,241 |
+| 8     | 5,083  | 89%   | 0.926    | 0.288            | 0.875             | 883,667   | 8,839        | 1,497,785 |
+| 9     | 4,259  | 91%   | 0.927    | 0.268            | 0.911             | 969,431   | 9,033        | 1,523,704 |
+| 10    | 3,682  | 93%   | 0.937    | 0.276            | 0.916             | 838,724   | 8,345        | 1,486,813 |
 
 **Key numbers at 93% churn**:
-- CPH: 0.929 recall, ~1M del/s, ~900k ins/s
-- HNSW+filter: 0.473 recall (graph clogging), ~10k ins/s effective
-- HNSW+rebuild: 0.952 recall, but requires full graph rebuild every round (~10k ins/s effective)
+- CPH: 0.937 recall, ~1.49M del/s, ~839k ins/s
+- HNSW+filter: 0.276 recall (graph clogging), no native delete
+- HNSW+rebuild: 0.916 recall, but requires full graph rebuild every round (~8.3k ins/s effective)
 
-CPH maintains recall within 0.023 of an always-optimal HNSW+rebuild while inserting
-and deleting **90–100× faster**.
+CPH beats HNSW+rebuild on both final recall (+2.1pp) and update throughput, while
+avoiding the rebuild path entirely.
 
 ---
 
@@ -41,21 +42,19 @@ with Copenhagen. IVFPQ: M=32 subquantizers, 8 bits (32 bytes/vec vs 512 for floa
 
 | Round | Live   | Del%  | CPH R@10 | IVF+filter R@10 | IVF+rebuild R@10 | IVFPQ+filter R@10 |
 |-------|--------|-------|----------|-----------------|------------------|-------------------|
-| 1     | 35,700 |  0%   | 0.951    | 0.795           | 0.795            | 0.436             |
-| 3     | 18,683 | 51%   | 0.945    | 0.782           | 0.786            | 0.447             |
-| 5     | 10,346 | 74%   | 0.941    | 0.784           | 0.793            | 0.472             |
-| 7     | 6,261  | 86%   | 0.930    | 0.757           | 0.808            | 0.454             |
-| 10    | 3,682  | 93%   | 0.929    | 0.663           | 0.887            | 0.423             |
+| 1     | 35,700 |  0%   | 0.960    | 0.815           | 0.815            | 0.432             |
+| 3     | 18,683 | 51%   | 0.949    | 0.789           | 0.802            | 0.426             |
+| 5     | 10,346 | 74%   | 0.940    | 0.783           | 0.811            | 0.443             |
+| 7     | 6,261  | 86%   | 0.935    | 0.759           | 0.815            | 0.443             |
+| 10    | 3,682  | 93%   | 0.937    | 0.642           | 0.803            | 0.392             |
 
-**Insert throughput** (round 1, 1000-vector batch):
-- CPH: ~900,000 /s (tombstone + BLAS centroid assignment)
-- IVF+filter: adds to frozen index, no retrain; ~same insert rate as CPH
-- IVF+rebuild: ~90,000–120,000 /s (full retrain each round)
+**Insert throughput** (round 10, 1000-vector batch):
+- CPH: ~971,000 /s
+- IVF+filter: add-only baseline, no retrain
+- IVF+rebuild: ~339,000 /s (full retrain each round)
 
-**IVFPQ note**: at M=32 (16× compression vs float32), IVFPQ achieves 0.42–0.47 recall —
-less than half of CPH's 0.93–0.95. IVFPQ QPS is modestly higher due to PQ distance
-table lookups, but the recall gap makes the comparison unfavorable. At M=8 (64×
-compression) IVFPQ recall drops to 0.06–0.11.
+**IVFPQ note**: at M=32 (16× compression vs float32), IVFPQ sits around 0.39–0.45
+recall here, far below Copenhagen's 0.94-0.96.
 
 ---
 
@@ -67,19 +66,18 @@ truth: brute-force over all 30k vectors.
 
 | Method                                          | Fashion R@10 | MNIST R@10 | Insert    |
 |-------------------------------------------------|-------------|------------|-----------|
-| FAISS IVF add-only (no retrain)                 | 0.953        | 0.973      | 21 ms     |
-| FAISS IVF full rebuild                          | 0.989        | 0.974      | 119 ms    |
-| AMPI (nlist=212, fans=16, probes=16)            | 0.997        | 0.974      | 7,063 ms  |
-| Copenhagen baseline (fixed, soft_k=1)           | 0.962        | 0.980      | 29 ms     |
-| Copenhagen adaptive (splits, soft_k=1)          | 0.945        | 0.977      | 93 ms     |
-| Copenhagen soft_k=2 (fixed)                     | 0.989        | 0.994      | 65 ms     |
-| Copenhagen best (splits + soft_k=2)             | 0.979        | 0.993      | 168 ms    |
+| FAISS IVF add-only (no retrain)                 | 0.9548      | 0.9736     | 31 ms     |
+| FAISS IVF full rebuild                          | 0.9892      | 0.9738     | 226 ms    |
+| Copenhagen baseline (fixed, soft_k=1)           | 0.9488      | 0.9766     | 57 ms     |
+| Copenhagen adaptive (splits, soft_k=1)          | 0.9236      | 0.9602     | 100 ms    |
+| Copenhagen soft_k=2 (fixed)                     | 0.9864      | 0.9936     | 101 ms    |
+| Copenhagen best (splits + soft_k=2)             | 0.9864      | 0.9936     | 102 ms    |
 
 **Key comparisons**:
-- Copenhagen best vs FAISS full rebuild: −0.98pp fashion recall, +0.19pp MNIST recall, 0.7× insert speed (168 ms vs 119 ms)
-- Copenhagen soft_k=2 (fixed) matches FAISS full rebuild on fashion recall (0.989 vs 0.989) at 1.8× faster insert (65 ms vs 119 ms) with +2.0pp MNIST recall
-- Copenhagen best vs FAISS add-only: +2.6pp fashion recall, +2.3pp MNIST recall
-- AMPI leads all on fashion recall (0.997) at 42× slower insert than Copenhagen best
+- Copenhagen best vs FAISS full rebuild: -0.28pp fashion recall, +1.98pp MNIST recall, 2.2x faster insert (102 ms vs 226 ms)
+- Copenhagen soft_k=2 (fixed) nearly matches FAISS full rebuild on fashion recall (0.9864 vs 0.9892) at 2.2x faster insert
+- Copenhagen best vs FAISS add-only: +3.16pp MNIST recall at +71 ms insert cost
+- AMPI was not installed on this host, so it was skipped in this run
 
 FAISS add-only collapses on fashion queries because all fashion vectors land in the
 few MNIST Voronoi cells that are "least wrong"; nprobe=4 scans only 12.5% of the
@@ -95,11 +93,11 @@ index and misses them.
 | Method                                    | Start  | Mid    | Final  |
 |-------------------------------------------|--------|--------|--------|
 | FAISS add-only                            | 0.9455 | 0.9770 | 0.9795 |
-| Copenhagen baseline (no splits, soft_k=1) | 0.9160 | 0.9590 | 0.9685 |
-| Copenhagen best (splits + soft_k=2)       | 0.9715 | 0.9855 | 0.9865 |
+| Copenhagen baseline (no splits, soft_k=1) | 0.9210 | 0.9580 | 0.9635 |
+| Copenhagen best (splits + soft_k=2)       | 0.9720 | 0.9875 | 0.9900 |
 
-Copenhagen best leads FAISS from the very first batch (+2.6pp) and finishes +0.7pp ahead.
-Copenhagen baseline lags at the start but closes the gap as splits fire.
+Copenhagen best leads FAISS from the first batch (+2.65pp) and finishes +1.05pp ahead.
+In this run the gain comes from `soft_k=2`; no adaptive splits fired.
 
 ---
 
@@ -111,20 +109,19 @@ already holding n vectors. CPH and FAISS IVF use batch add; HNSW uses single-vec
 
 | n       | CPH µs/vec | CPH R@10 | IVF µs/vec | IVF R@10 | HNSW µs/vec | HNSW R@10 |
 |---------|-----------|----------|-----------|----------|------------|----------|
-| 5,000   | 1.16      | 0.993    | 0.79      | 0.951    | 280        | 1.000    |
-| 10,000  | 1.24      | 0.996    | 0.60      | 0.975    | 492        | 1.000    |
-| 25,000  | 1.12      | 0.997    | 0.64      | 0.972    | 1,092      | 1.000    |
-| 50,000  | 1.03      | 0.998    | 0.64      | 0.975    | 2,207      | 0.998    |
-| 100,000 | 1.08      | 0.996    | 0.67      | 0.985    | 8,419      | 0.997    |
+| 5,000   | 1.18      | 0.991    | 0.50      | 0.951    | 75.96      | 1.000    |
+| 10,000  | 1.41      | 0.996    | 0.59      | 0.975    | 113.09     | 1.000    |
+| 25,000  | 1.39      | 0.996    | 0.59      | 0.970    | 214.41     | 1.000    |
+| 50,000  | 1.35      | 0.999    | 0.76      | 0.975    | 308.25     | 0.998    |
+| 100,000 | 1.82      | 0.999    | 0.54      | 0.985    | 512.70     | 0.995    |
 
 **Insert cost change over 20× scale-up (5k → 100k):**
-- CPH: 0.93× — flat → **O(1)**
-- FAISS IVF: 0.85× — flat → **O(1)**
-- HNSW: 30× — growing → **O(log n)** (amplified by cache effects at large n)
+- CPH: 1.54x — flat enough to remain **O(1)**
+- FAISS IVF: 1.08x — **O(1)**
+- HNSW: 6.75x — **O(log n)** + cache effects
 
-HNSW starts at 240× the CPH insert cost and reaches 7,800× at n=100k. Both CPH and
-FAISS IVF are O(1) in insert cost; the difference is recall under distribution shift
-(see §3) and O(1) delete (FAISS IVF has no native delete).
+Both CPH and FAISS IVF remain effectively flat in insert cost; HNSW is still much
+more expensive per inserted vector and lacks native tombstone delete.
 
 ---
 
@@ -134,14 +131,14 @@ FAISS IVF are O(1) in insert cost; the difference is recall under distribution s
 
 | Method                           | R@10  | QPS    |
 |----------------------------------|-------|--------|
-| FAISS Flat L2 (exact)            | 1.000 | 4,277  |
-| FAISS IVF nprobe=1               | 0.595 | 10,121 |
-| FAISS IVF nprobe=10              | 0.595 | 10,327 |
-| Copenhagen n=16 nprobe=8         | 0.740 | 7,974  |
-| Copenhagen n=32 nprobe=8         | 0.499 | 11,779 |
-| Copenhagen n=64 nprobe=8         | 0.368 | 15,070 |
+| FAISS Flat L2 (exact)            | 1.000 | 3,476  |
+| FAISS IVF nprobe=1               | 0.595 | 8,886  |
+| FAISS IVF nprobe=10              | 0.595 | 8,719  |
+| Copenhagen n=16 nprobe=8         | 0.712 | 6,672  |
+| Copenhagen n=32 nprobe=8         | 0.483 | 10,802 |
+| Copenhagen n=64 nprobe=8         | 0.369 | 16,404 |
 
-FAISS IVF recall is capped by nlist=100 (sqrt(10k)) — nprobe has no effect past the cluster count. Copenhagen R@10 peaks at n=16 clusters with nprobe=8 (0.740) and trades recall for QPS at higher cluster counts. On stable distributions CPH is competitive on QPS but not recall — the advantage is in dynamic workloads: ~900k ins/s and O(1) delete vs HNSW/IVF rebuild.
+FAISS IVF recall is capped by nlist=100 (sqrt(10k)) — nprobe has no effect past the cluster count. Copenhagen R@10 peaks at n=16 clusters with nprobe=8 (0.712) and trades recall for QPS at higher cluster counts. On stable distributions CPH is competitive on QPS but not recall — the advantage is in dynamic workloads: ~900k ins/s and O(1) delete vs HNSW/IVF rebuild.
 
 ---
 
@@ -152,20 +149,20 @@ Copenhagen tuned via (n_clusters, nprobe). Selected points from the Pareto front
 
 | Method                        | R@10  | QPS    |
 |-------------------------------|-------|--------|
-| HNSW M=16 ef=32               | 0.961 | 6,209  |
-| HNSW M=32 ef=32               | 0.972 | 5,803  |
-| HNSW M=32 ef=64               | 0.994 | 4,454  |
-| HNSW M=32 ef=128              | 0.998 | 3,179  |
-| HNSW M=32 ef=256              | 1.000 | 1,698  |
-| Copenhagen n=64 nprobe=4      | 0.920 | 5,031  |
-| Copenhagen n=32 nprobe=4      | 0.971 | 3,661  |
-| Copenhagen n=16 nprobe=4      | 0.991 | 1,947  |
-| Copenhagen n=16 nprobe=8      | 1.000 | 1,178  |
+| HNSW M=16 ef=32               | 0.952 | 13,425 |
+| HNSW M=32 ef=32               | 0.966 | 11,633 |
+| HNSW M=32 ef=64               | 0.996 | 8,167  |
+| HNSW M=32 ef=128              | 0.999 | 5,217  |
+| HNSW M=32 ef=256              | 1.000 | 3,070  |
+| Copenhagen n=64 nprobe=4      | 0.923 | 2,714  |
+| Copenhagen n=32 nprobe=4      | 0.969 | 2,975  |
+| Copenhagen n=16 nprobe=4      | 0.996 | 1,691  |
+| Copenhagen n=16 nprobe=8      | 1.000 | 906    |
 
 On a static dataset HNSW dominates the recall/QPS frontier. At R@10 ≈ 0.97,
-HNSW M=32 ef=32 (5,803 QPS) is 1.6× faster than CPH n=32 nprobe=4 (3,661 QPS).
-CPH's advantage is elsewhere: O(1) insert cost (240–7,800× cheaper than HNSW per
-vector, see §5) and O(1) tombstone delete (HNSW has no native delete).
+HNSW M=32 ef=32 (11,633 QPS) is 3.9x faster than CPH n=32 nprobe=4 (2,975 QPS).
+CPH's advantage is elsewhere: effectively O(1) insert cost (see §5) and O(1)
+tombstone delete (HNSW has no native delete).
 
 ---
 

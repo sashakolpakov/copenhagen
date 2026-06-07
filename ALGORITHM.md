@@ -136,9 +136,9 @@ soft_k=3  →  near-perfect recall in most configurations
 ```
 
 **Benchmark (MNIST→Fashion drift, n=30k, d=784, nprobe=4)**:
-- soft_k=1: 0.47 recall@10 (fashion queries)
-- soft_k=2: 0.99 recall@10, 45ms insert — matches FAISS full-rebuild recall at
-  3.6× faster insert
+- soft_k=1: 0.9488 recall@10 (fashion queries) in the latest full run
+- soft_k=2: 0.9864 recall@10, 101ms insert — within 0.28pp of FAISS full
+  rebuild recall (0.9892) at 2.2x faster insert
 
 Multi-probe search (querying extra clusters at search time) is related but
 different: it helps at query time but doesn't index the vector in the boundary
@@ -186,8 +186,8 @@ distances is an `(n × d) · (d × k)` matrix multiply — a single `cblas_sgemm
 call. This gives ~60–100× throughput improvement over a Python loop:
 
 ```
-CPH insert throughput:  ~1,000,000 vectors/s
-HNSW insert throughput: ~10,000–20,000 vectors/s
+CPH insert throughput:  ~0.84–0.97 million vectors/s under churn
+HNSW rebuild throughput: ~8,000–11,000 vectors/s under the same churn workload
 ```
 
 HNSW graph construction cannot be batched this way (each insert depends on the
@@ -304,21 +304,22 @@ Where m = live cluster size, iters = max_split_iters (default 10).
 
 **vs HNSW**: HNSW graph construction is not batchable — each insert requires
 updating the graph for all its neighbours. Under 30% per-round churn
-(n_init=50k, 10 rounds), HNSW+filter recall collapses to 0.46 at 93% churn
-because deleted nodes clog traversal paths. HNSW+rebuild holds recall (0.95+)
+(n_init=50k, 10 rounds), HNSW+filter recall collapses to 0.276 at 93% churn
+because deleted nodes clog traversal paths. HNSW+rebuild recovers to 0.916
 but requires a full graph rebuild every round (~8k–10k effective inserts/s).
-Copenhagen (nprobe=32/64): 0.93–0.95 recall, 1M+ inserts/s, 1M+ deletes/s.
+Copenhagen (nprobe=32/64): 0.926–0.960 recall across the run, ending at 0.937
+with ~839k inserts/s and ~1.49M deletes/s.
 
 **vs FAISS IVFFlat**: FAISS has no native delete — tombstone+filter or full
 rebuild are the only options. With the same 64 clusters and nprobe=32, FAISS
-IVF+filter degrades from 0.80 to 0.66 recall over 10 churn rounds; Copenhagen
-holds 0.93–0.95. FAISS IVF+rebuild restores recall each round but costs
-100–200k inserts/s effective (full retrain).
+IVF+filter degrades from 0.815 to 0.642 recall over 10 churn rounds; Copenhagen
+holds 0.926–0.960. FAISS IVF+rebuild restores recall each round but lands around
+0.803 recall in the final round and ~339k inserts/s effective.
 
 **vs FAISS IVFPQ**: Product quantization reduces memory (32 bytes/vec at M=32
 vs 512 for float32) at the cost of recall. At the same 64 clusters / nprobe=32,
-IVFPQ achieves 0.42–0.47 recall@10 under churn. Copenhagen full precision:
-0.93–0.95.
+IVFPQ achieves 0.392–0.446 recall@10 under churn. Copenhagen full precision:
+0.926–0.960.
 
 **vs AMPI**: AMPI uses affine fan cones with an Oja subspace sketch for
 per-cluster drift detection — a more principled geometric approach. It detects

@@ -259,19 +259,19 @@ it should be — at 2 bits and low :math:`d`:
      - :math:`\Delta`
    * - 128
      - 2-bit
-     - 0.463
-     - **0.599** (:math:`B{=}4`)
-     - **+13.6 pp**
+     - 0.4581
+     - **0.5806** (:math:`B{=}4`)
+     - **+12.3 pp**
    * - 128
      - 4-bit
-     - 0.820
-     - 0.847 (:math:`B{=}2`)
-     - +2.7 pp
+     - 0.8183
+     - 0.8412 (:math:`B{=}2`)
+     - +2.3 pp
    * - 768
      - 2-bit
-     - 0.597
-     - **0.716** (:math:`B{=}4`)
-     - **+11.9 pp**
+     - 0.5990
+     - **0.7288** (:math:`B{=}4`)
+     - **+13.0 pp**
 
 We refer to the block scheme as *adaptive binning*: the codebook learns the
 shape of the joint cell where scalar quantization can only place axis-aligned
@@ -331,8 +331,8 @@ SPD for :math:`\eta\ge 1`). Copenhagen implements this exactly
 (:file:`src/block_quant.hpp`).
 
 **The measured result is that** :math:`\eta>1` **does not help and large**
-:math:`\eta` **hurts** (e.g. :math:`d{=}128`, 2-bit: :math:`0.599` at
-:math:`\eta{=}1` falls to :math:`0.568` at :math:`\eta{=}100`). The reason is
+:math:`\eta` **hurts** (e.g. :math:`d{=}128`, 2-bit: :math:`0.5987` at
+:math:`\eta{=}1` falls to :math:`0.5682` at :math:`\eta{=}100`). The reason is
 specific to our pipeline: the length-renormalization :eq:`scale` *already divides
 out the parallel/norm component of the reconstruction error*. ScaNN's
 :math:`\eta>1` exists for indexes that do **not** renormalize; stacked on top of

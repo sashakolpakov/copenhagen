@@ -19,7 +19,7 @@ The design draws on the logarithmic-method bucket structure and tombstone correc
 
 | Scenario | Why Copenhagen |
 |---|---|
-| E-commerce catalog — 10k new SKUs/hour | 0.4 µs/vector insert, never goes offline; adaptive splits recover recall after catalog expansions |
+| E-commerce catalog — 10k new SKUs/hour | 1.3-1.8 µs/vector insert, never goes offline; adaptive splits recover recall after catalog expansions |
 | News / real-time content index | O(1) tombstone delete (0.3 µs/delete, zero leaked results); FAISS IVF has no native delete primitive |
 | Chat / document embedding cache | `soft_k=2` keeps recall high at Voronoi boundaries; storage overhead is exactly 2× standard IVF |
 | Streaming with gradual drift | Recall stays stable as new-distribution vectors arrive in batches; FAISS degrades monotonically |
@@ -142,38 +142,38 @@ Train on MNIST (20k vectors), insert Fashion-MNIST (10k vectors) without retrain
 
 | Method | Fashion recall@10 | MNIST recall@10 | Insert time |
 |---|---|---|---|
-| FAISS IVF add-only | 0.953 | 0.973 | 21 ms |
-| FAISS IVF full rebuild | 0.989 | 0.974 | 119 ms |
-| AMPI (nlist=212, fans=16, probes=16) | **0.997** | 0.974 | 7,063 ms |
-| Copenhagen baseline (soft_k=1, no splits) | 0.962 | 0.980 | 29 ms |
-| Copenhagen soft_k=2 (fixed) | 0.989 | **0.994** | 65 ms |
-| Copenhagen best (soft_k=2 + splits) | 0.979 | 0.993 | 168 ms |
+| FAISS IVF add-only | 0.9548 | 0.9736 | 31 ms |
+| FAISS IVF full rebuild | 0.9892 | 0.9738 | 226 ms |
+| Copenhagen baseline (soft_k=1, no splits) | 0.9488 | 0.9766 | 57 ms |
+| Copenhagen adaptive (splits, soft_k=1) | 0.9236 | 0.9602 | 100 ms |
+| Copenhagen soft_k=2 (fixed) | 0.9864 | **0.9936** | 101 ms |
+| Copenhagen best (soft_k=2 + splits) | 0.9864 | **0.9936** | 102 ms |
 
-Copenhagen soft_k=2 matches FAISS full rebuild on fashion recall (0.989 vs 0.989) at 1.8× faster insert (65 ms vs 119 ms), with +2.0pp MNIST recall. Copenhagen best is ~42× faster to insert than AMPI at a cost of 1.8pp fashion recall. AMPI is the right call when drift recall is the primary metric and insert latency is not a constraint.
+On the latest full Linux run, Copenhagen best is 2.2x faster to insert than FAISS full rebuild (102 ms vs 226 ms) while trailing by just 0.28pp on Fashion recall and leading by 1.98pp on MNIST recall. `soft_k=2` is doing most of the work here; adaptive splitting did not fire in this run. AMPI was not installed on this host, so it is omitted from the table.
 
 ### Gradual streaming drift (500 vectors/batch × 10 batches)
 
 | Method | Recall at batch 1 | Mid | Final |
 |---|---|---|---|
 | FAISS add-only | 0.946 | 0.977 | 0.980 |
-| Copenhagen baseline | 0.916 | 0.959 | 0.969 |
-| Copenhagen best (soft_k=2 + splits) | **0.972** | **0.986** | **0.987** |
+| Copenhagen baseline | 0.921 | 0.958 | 0.964 |
+| Copenhagen best (soft_k=2 + splits) | **0.972** | **0.988** | **0.990** |
 
-Copenhagen best leads FAISS from the very first batch (+2.6pp) and finishes +0.7pp ahead.
+Copenhagen best leads FAISS from the first batch (+2.65pp) and finishes +1.05pp ahead.
 
 ### Insert scaling — O(1) vs O(log n) (SIFT-128, d=128)
 
 | n       | CPH µs/vec | CPH R@10 | FAISS IVF µs/vec | IVF R@10 | HNSW µs/vec | HNSW R@10 |
 |---------|-----------|----------|-----------------|----------|------------|----------|
-| 5,000   | 1.16      | 0.993    | 0.79            | 0.951    | 280        | 1.000    |
-| 25,000  | 1.12      | 0.997    | 0.64            | 0.972    | 1,092      | 1.000    |
-| 100,000 | 1.08      | 0.996    | 0.67            | 0.985    | 8,419      | 0.997    |
+| 5,000   | 1.18      | 0.991    | 0.50            | 0.951    | 75.96      | 1.000    |
+| 25,000  | 1.39      | 0.996    | 0.59            | 0.970    | 214.41     | 1.000    |
+| 100,000 | 1.82      | 0.999    | 0.54            | 0.985    | 512.70     | 0.995    |
 
-CPH and FAISS IVF both show flat insert cost (O(1) in n). HNSW grows 30× over the same range. HNSW starts at 240× the CPH insert cost and reaches 7,800× at n=100k. CPH recall (0.993–0.998) exceeds FAISS IVF (0.951–0.985) at the same nprobe on this dataset.
+CPH and FAISS IVF both stay effectively flat in insert cost. In the latest run CPH grows 1.54x over a 20x scale-up, IVF 1.08x, while HNSW grows 6.75x. CPH recall (0.991-0.999) still exceeds IVF (0.951-0.985) at the same `nprobe` on this dataset.
 
 ### Static recall vs HNSW (SIFT-100k, d=128)
 
-On a static dataset HNSW dominates: at R@10 ≈ 0.97, HNSW M=32 ef=32 runs at 5,803 QPS vs CPH n=32 nprobe=4 at 3,661 QPS. CPH's advantage is insert cost (240–7,800× cheaper per vector at n=5k–100k, see insert scaling above) and O(1) delete — HNSW has neither.
+On a static dataset HNSW still dominates the recall/QPS frontier: at R@10 ~= 0.97, HNSW `M=32 ef=32` runs at 11,633 QPS vs Copenhagen `n_clusters=32 nprobe=4` at 2,975 QPS. Copenhagen's advantage is insert cost and O(1) delete, not peak static-search efficiency.
 
 Full recall/QPS table: [BENCHMARKS.md §8](BENCHMARKS.md).
 
@@ -181,11 +181,13 @@ Full recall/QPS table: [BENCHMARKS.md §8](BENCHMARKS.md).
 
 | Method | Recall@10 | Inserts/s | Deletes/s |
 |---|---|---|---|
-| HNSW + filter | 0.47 | — | — |
-| HNSW + rebuild | 0.95 | ~10k | — |
-| Copenhagen | **0.93–0.95** | **~900k** | **~1M** |
+| FAISS IVF + filter | 0.642 | — | — |
+| FAISS IVF + rebuild | 0.803 | ~339k | — |
+| HNSW + filter | 0.276 | — | — |
+| HNSW + rebuild | 0.916 | ~8.3k | — |
+| Copenhagen | **0.937** | **~839k** | **~1.49M** |
 
-Full tables in [BENCHMARKS.md](BENCHMARKS.md).
+By round 10 (~93% cumulative churn), Copenhagen stays near rebuild-level recall while deleting about 180x faster than HNSW's rebuild throughput and inserting about 2.5x faster than FAISS IVF rebuild. Full per-round tables are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ### Tombstone delete
 
@@ -206,10 +208,12 @@ references: [docs/source/theory.rst](docs/source/theory.rst).
 
 | Index | recall@10 | bytes/vec | compression |
 |---|---|---|---|
-| Copenhagen float | 0.995 | 512 | 1.0× |
-| Copenhagen **IVFPQ** (M=16) | 0.650 | **528** | 0.97× *(larger!)* |
-| TurboVec 4-bit | 0.848 | 68 | 7.5× |
-| TurboVec 2-bit | 0.627 | 36 | 14.2× |
+| Copenhagen float | 0.9971 | 512 | 1.0× |
+| Copenhagen **IVFPQ** (M=16) | 0.6463 | **528** | 0.97× |
+| TurboVec 4-bit | 0.8476 | 68 | 7.5× |
+| TurboVec 2-bit | 0.6266 | 36 | 14.2× |
+| Copenhagen-TQ block VQ `B=2` | 0.9070 | 72 | 7.1× |
+| Copenhagen-TQ block VQ `B=4` | 0.7002 | 40 | 12.8× |
 
 Copenhagen's *current* IVFPQ path is dominated on both axes — it stores PQ codes
 *on top of* retained float32, so it is bigger **and** lower-recall. TurboQuant is
@@ -225,9 +229,10 @@ coordinates jointly** ("adaptive binning"), recovering it. At matched bytes/vect
 
 | d | rate | scalar TurboQuant | **block VQ** | Δ |
 |---|---|---|---|---|
-| 128 | 2-bit | 0.463 | **0.599** | **+13.6 pp** |
-| 768 | 2-bit | 0.597 | **0.716** | **+11.9 pp** |
-| 1536 | 2-bit | 0.664 | — | (gap shrinks with d) |
+| 128 | 2-bit | 0.4581 | **0.5806** | **+12.3 pp** |
+| 128 | 4-bit | 0.8183 | **0.8412** | **+2.3 pp** |
+| 768 | 2-bit | 0.5990 | **0.7288** | **+13.0 pp** |
+| 768 | 4-bit | 0.8700 | **0.8956** | **+2.6 pp** |
 
 The gain is largest exactly where scalar TurboQuant is weakest. We also
 implemented the ScaNN anisotropic loss and found it *does not help here* — the

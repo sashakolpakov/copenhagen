@@ -9,8 +9,9 @@
 
 - **Soft assignments (soft_k)** — each vector indexed in its top-`soft_k`
   nearest clusters. `id_to_location` tracks all slot positions; dedup pass at
-  search time. soft_k=2 matches FAISS full-rebuild recall at 3.6× faster insert
-  on the MNIST→Fashion drift benchmark.
+  search time. In the latest full MNIST→Fashion benchmark, `soft_k=2` lands at
+  0.9864 Fashion recall vs FAISS full rebuild at 0.9892, while inserting 2.2x
+  faster (101 ms vs 226 ms).
 
 - **Adaptive cluster splitting** — `rebalance_if_needed()` checks live counts
   against `mean × split_threshold` after each `insert_batch`; `split_cluster`
