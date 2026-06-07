@@ -12,8 +12,9 @@
 // fit on the empirical pooled rotated coordinates of the training batch, which
 // is data-adaptive and sidesteps needing the Beta CDF in C++.
 //
-// Scoring is a per-coordinate table lookup, structured to leave a clean seam
-// for a NEON nibble-LUT SIMD kernel later (see score_ip / build_query_table).
+// Scoring is a per-coordinate table lookup. For the default bits<=4 it runs as
+// a SIMD nibble-LUT "fast scan" (tq_fastscan.hpp; NEON/AVX2 with a scalar-block
+// fallback) over a blocked code layout — ~10-25x over the scalar score_ip here.
 
 #pragma once
 #include <vector>
@@ -263,7 +264,10 @@ struct TurboQuantizer {
     }
 
     // Inner-product estimate for one code vector given a prepared query table.
-    // This is the hot loop; a NEON nibble-LUT kernel replaces it later.
+    // Scalar reference path, used directly for bits>4 (n_levels>16). For the
+    // default bits<=4 the index scores via the SIMD nibble-LUT fast-scan kernel
+    // in tq_fastscan.hpp (NEON/AVX2, scalar-block fallback), which is ~10-25x
+    // faster; this loop remains its bit-exact correctness reference.
     inline float score_ip(const float* table, float bias,
                           const uint8_t* codes, float vec_scale) const {
         float acc = bias;

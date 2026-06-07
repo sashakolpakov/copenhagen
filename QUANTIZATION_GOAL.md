@@ -265,7 +265,12 @@ NEON nibble-LUT path — measure recall cost of 16 vs 256 codes/block.
       `python/core/__init__.py`, rebuilt `.so`, and passed smoke/stress tests.
       Remaining integration work is to upgrade this live path toward block-VQ /
       decoded-split variants rather than to land TQ itself.
-- [ ] Phase 5 — NEON SIMD nibble-LUT kernel behind the block scorer (block → code
-      → LUT layout is SIMD-native).
+- [x] Phase 5 — SIMD nibble-LUT fast-scan kernel for the scalar-TQ path
+      (`src/tq_fastscan.hpp`): NEON (`vqtbl1q_u8`) + AVX2 (`pshufb`) with a
+      scalar-block fallback, runtime arch dispatch, blocked `[block][dim][32]`
+      code layout in `TQCluster`. Bit-exact with the scalar scorer; ~10–25×
+      faster (BENCHMARKS.md §6). Default for `tq_bits<=4`. The Kc=256 block-VQ
+      scorer stays a gather (256 codes exceed a register table) — a future
+      Kc=16 nibble variant could reuse this kernel.
 - [x] Phase 6 — Benchmarked vs the removed baseline in `benchmarks/`, updated
       docs, and culled the old path after the TQ path passed the same suite.

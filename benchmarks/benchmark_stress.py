@@ -19,9 +19,11 @@ Run:
 """
 
 import sys, os, time
+from pathlib import Path
 import numpy as np
 
-sys.path.insert(0, '/Users/sasha/copenhagen')
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
 from python.core import DynamicIVF
 
 try:
@@ -181,8 +183,8 @@ def scenario_a():
 def scenario_b():
     banner("Scenario B — MNIST→Fashion: recall vs nprobe (FAISS degrades faster)")
 
-    MNIST_PATH   = '/Users/sasha/copenhagen/data/MNIST/mnist-784-euclidean.hdf5'
-    FASHION_PATH = '/Users/sasha/copenhagen/data/fashion-mnist/fashion-mnist-784-euclidean.hdf5'
+    MNIST_PATH   = str(_REPO_ROOT / "data/MNIST/mnist-784-euclidean.hdf5")
+    FASHION_PATH = str(_REPO_ROOT / "data/fashion-mnist/fashion-mnist-784-euclidean.hdf5")
     if not (HAS_H5PY and os.path.exists(MNIST_PATH)):
         print("  Skipping: MNIST data not found")
         return

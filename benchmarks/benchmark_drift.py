@@ -224,7 +224,7 @@ def run_copenhagen(mnist_train, mnist_test, fashion_train, fashion_test,
     gt_fashion = _brute_knn(all_data, fashion_test, k)
     gt_mnist   = _brute_knn(all_data, mnist_test,   k)
 
-    idx = DynamicIVF(dim, n_clusters, nprobe, 0, 8, 256, soft_k)
+    idx = DynamicIVF(dim, n_clusters, nprobe, "none", 4, soft_k)
     idx.split_threshold = split_threshold
     idx.train(mnist_train)
     s0 = idx.get_stats()
@@ -355,7 +355,7 @@ def main():
         if soft_k == 2 and threshold == 3.0:
             # Rebuild index for per-cluster breakdown (run_copenhagen doesn't return it)
             from python.core import DynamicIVF as _DynamicIVF
-            best_idx_obj = _DynamicIVF(mt.shape[1], N_CLUSTERS, NPROBE, 0, 8, 256, soft_k)
+            best_idx_obj = _DynamicIVF(mt.shape[1], N_CLUSTERS, NPROBE, "none", 4, soft_k)
             best_idx_obj.split_threshold = threshold
             best_idx_obj.train(mt)
             best_idx_obj.insert_batch(ft)
@@ -424,8 +424,8 @@ def main():
         recall_delta = (cph_base['recall_fashion'] - faiss_ao['recall_fashion']) * 100
         print(f"  Copenhagen base  vs  FAISS add-only: recall {recall_delta:+.2f}pp")
 
-    os.makedirs('/Users/sasha/copenhagen/results', exist_ok=True)
-    out = '/Users/sasha/copenhagen/results/drift.json'
+    os.makedirs(_REPO_ROOT / "results", exist_ok=True)
+    out = str(_REPO_ROOT / "results" / "drift.json")
     with open(out, 'w') as fh:
         json.dump(all_results, fh, indent=2)
     print(f"\n  Results → {out}")

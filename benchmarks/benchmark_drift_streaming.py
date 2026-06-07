@@ -79,7 +79,7 @@ def run_streaming(mnist_train, fashion_train, fashion_test,
     """
     dim = mnist_train.shape[1]
 
-    idx = DynamicIVF(dim, n_clusters, nprobe, 0, 8, 256, soft_k)
+    idx = DynamicIVF(dim, n_clusters, nprobe, "none", 4, soft_k)
     idx.split_threshold = split_threshold
     idx.train(mnist_train)
 

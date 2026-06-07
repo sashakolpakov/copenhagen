@@ -103,14 +103,17 @@ def section_compression(base, queries, gt):
     print(f"{'Copenhagen float':<26}{rec:>11.4f}{bpv:>12}{fb/bpv:>9.1f}x{qps:>10,.0f}")
     rows.append(("Copenhagen float", rec, bpv))
 
-    # Copenhagen IVFPQ (current compressed path) — note: also retains floats
-    pq_m = 16
-    rec, qps = bench_cph("CPH IVFPQ", n_clusters=256, nprobe=32, soft_k=1,
-                         use_pq=True, pq_m=pq_m, pq_ks=256)
-    bpv = pq_m + fb   # PQ codes ON TOP of retained float32 (no memory win)
-    print(f"{'Copenhagen IVFPQ (M=%d)' % pq_m:<26}{rec:>11.4f}{bpv:>12}{fb/bpv:>9.1f}x{qps:>10,.0f}"
-          f"   [+{pq_m}B codes, floats retained]")
-    rows.append(("Copenhagen IVFPQ", rec, bpv))
+    # Copenhagen TurboQuant 4-bit — the SIMD fast-scan compressed path (replaces
+    # the old IVFPQ row). Note: the index also retains float vectors for the exact
+    # rerank, so there is no net memory win here; the pure recall-per-byte story is
+    # the standalone TQ / block-VQ harnesses in the compression section.
+    rec, qps = bench_cph("CPH TQ-4bit", n_clusters=256, nprobe=32, soft_k=1,
+                         quant="tq", tq_bits=4)
+    tq_codes = (4 * d) // 8 + 8   # 4-bit codes + scale + ||v||^2
+    bpv = tq_codes + fb           # codes ON TOP of retained float32
+    print(f"{'Copenhagen TQ-4bit':<26}{rec:>11.4f}{bpv:>12}{fb/bpv:>9.1f}x{qps:>10,.0f}"
+          f"   [+{tq_codes}B codes, floats retained, SIMD fast-scan]")
+    rows.append(("Copenhagen TQ-4bit", rec, bpv))
 
     # TurboVec 4-bit and 2-bit
     for bw in (4, 2):
