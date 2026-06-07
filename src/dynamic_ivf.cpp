@@ -42,6 +42,7 @@
 #include <stdexcept>
 
 #include "turbo_quant.hpp"
+#include "tq_fastscan.hpp"
 
 #if !defined(_WIN32)
 #include <sys/mman.h>
@@ -56,83 +57,6 @@
 #include <cblas.h>
 #elif defined(USE_MKL)
 #include <mkl_cblas.h>
-#endif
-
-#if defined(__AVX2__)
-#include <immintrin.h>
-#elif defined(__ARM_NEON)
-#include <arm_neon.h>
-#endif
-
-#if defined(__AVX2__)
-static inline float avx256_horizontal_sum(__m256 v) {
-    __m128 lo = _mm256_castps256_ps128(v);
-    __m128 hi = _mm256_extractf128_ps(v, 1);
-    __m128 sum = _mm_add_ps(lo, hi);
-    sum = _mm_hadd_ps(sum, sum);
-    sum = _mm_hadd_ps(sum, sum);
-    return _mm_cvtss_f32(sum);
-}
-#endif
-
-#if defined(__AVX2__)
-static inline float simd_pq_distance(float* const* tables, const uint8_t* codes, int M) {
-    __m256 acc = _mm256_setzero_ps();
-    int m = 0;
-
-    for (; m + 8 <= M; m += 8) {
-        __m256i indices = _mm256_setr_epi32(
-            codes[m], codes[m+1], codes[m+2], codes[m+3],
-            codes[m+4], codes[m+5], codes[m+6], codes[m+7]
-        );
-
-        __m256 d0 = _mm256_i32gather_ps(tables[m], indices, 4);
-        __m256 d1 = _mm256_i32gather_ps(tables[m+4], indices, 4);
-
-        acc = _mm256_add_ps(acc, _mm256_add_ps(d0, d1));
-    }
-
-    float result = avx256_horizontal_sum(acc);
-
-    for (; m < M; m++) {
-        result += tables[m][codes[m]];
-    }
-
-    return result;
-}
-
-#elif defined(__ARM_NEON)
-static inline float simd_pq_distance(float* const* tables, const uint8_t* codes, int M) {
-    float32x4_t acc = vdupq_n_f32(0.0f);
-    int m = 0;
-
-    for (; m + 4 <= M; m += 4) {
-        float vals[4] = {
-            tables[m  ][codes[m  ]],
-            tables[m+1][codes[m+1]],
-            tables[m+2][codes[m+2]],
-            tables[m+3][codes[m+3]],
-        };
-        acc = vaddq_f32(acc, vld1q_f32(vals));
-    }
-
-    float result = vaddvq_f32(acc);
-
-    for (; m < M; m++) {
-        result += tables[m][codes[m]];
-    }
-
-    return result;
-}
-
-#else
-static inline float simd_pq_distance(const float** tables, const uint8_t* codes, int M) {
-    float dist = 0;
-    for (int m = 0; m < M; m++) {
-        dist += tables[m][codes[m]];
-    }
-    return dist;
-}
 #endif
 
 namespace py = pybind11;
@@ -619,6 +543,16 @@ struct PQCluster {
     }
 };
 
+// Stores TurboQuant codes for one IVF cluster. Two on-disk-equivalent layouts,
+// chosen once via set_layout():
+//   width == 0 : row-major codes[vector][code_size] (1 byte/dim). Used when
+//                bits > 4 (n_levels > 16), scored by the scalar score_ip.
+//   width == W : SIMD fast-scan blocked layout codes[block][code_size][W], so
+//                the W codes for a given dimension are contiguous and load in
+//                one register. Used when bits <= 4 (the default 4-bit path).
+// scales / sqnorms / ids stay simple per-vector arrays in both layouts. capacity
+// is always a multiple of W in blocked mode, so growing only appends new blocks
+// and never relays existing ones.
 struct TQCluster {
     uint8_t* codes;
     float* scales;
@@ -627,14 +561,16 @@ struct TQCluster {
     int size;
     int capacity;
     int code_size;
+    int width;          // 0 = row-major scalar; fastscan::kWidth = blocked SIMD
 
     TQCluster()
         : codes(nullptr), scales(nullptr), sqnorms(nullptr), ids(nullptr),
-          size(0), capacity(0), code_size(0) {}
+          size(0), capacity(0), code_size(0), width(0) {}
 
     TQCluster(TQCluster&& other) noexcept
         : codes(other.codes), scales(other.scales), sqnorms(other.sqnorms), ids(other.ids),
-          size(other.size), capacity(other.capacity), code_size(other.code_size) {
+          size(other.size), capacity(other.capacity), code_size(other.code_size),
+          width(other.width) {
         other.codes = nullptr;
         other.scales = nullptr;
         other.sqnorms = nullptr;
@@ -657,6 +593,7 @@ struct TQCluster {
             size = other.size; other.size = 0;
             capacity = other.capacity; other.capacity = 0;
             code_size = other.code_size;
+            width = other.width;
         }
         return *this;
     }
@@ -671,14 +608,42 @@ struct TQCluster {
         if (ids) free(ids);
     }
 
+    bool is_blocked() const { return width > 1; }
+    // Number of populated SIMD blocks (blocked layout only).
+    int n_blocks() const { return (size + width - 1) / width; }
+
+    // Configure logical code length and storage layout. Must be called before
+    // any add_codes and never changed afterward (the buffer layout depends on it).
+    void set_layout(int code_size_in, int width_in) {
+        code_size = code_size_in;
+        width = width_in;
+    }
+    // Back-compat shim: row-major layout.
     void set_code_size(int n) { code_size = n; }
+
+    // Byte offset of code for dimension d of the vector at logical index i.
+    size_t code_off(int i, int d) const {
+        if (width > 1) {
+            int b = i / width, lane = i % width;
+            return (size_t)b * code_size * width + (size_t)d * width + lane;
+        }
+        return (size_t)i * code_size + d;
+    }
+
+    // Bytes of `codes` occupied by `n` vectors under the current layout.
+    size_t bytes_for(int n) const {
+        if (width > 1) return (size_t)((n + width - 1) / width) * code_size * width;
+        return (size_t)n * code_size;
+    }
 
     void add_codes(const uint8_t* new_codes, int code_size_in, float scale, float sqnorm, int id) {
         if (code_size == 0) code_size = code_size_in;
         if (code_size != code_size_in) throw std::runtime_error("TQ code size mismatch");
         if (size >= capacity) {
-            capacity = capacity == 0 ? 64 : capacity * 2;
-            uint8_t* new_codes_arr = (uint8_t*)malloc((size_t)capacity * code_size * sizeof(uint8_t));
+            capacity = capacity == 0 ? 64 : capacity * 2;   // 64 is a multiple of kWidth
+            // calloc zeros padding lanes of partial blocks (never read, but keeps
+            // the buffer deterministic).
+            uint8_t* new_codes_arr = (uint8_t*)calloc((size_t)capacity * code_size, sizeof(uint8_t));
             float* new_scales = (float*)malloc((size_t)capacity * sizeof(float));
             float* new_sqnorms = (float*)malloc((size_t)capacity * sizeof(float));
             int* new_ids_arr = (int*)malloc((size_t)capacity * sizeof(int));
@@ -690,7 +655,9 @@ struct TQCluster {
                 throw std::bad_alloc();
             }
             if (codes) {
-                std::memcpy(new_codes_arr, codes, (size_t)size * code_size * sizeof(uint8_t));
+                // Existing blocks/rows keep their byte offsets, so a flat copy of
+                // the populated prefix is correct in both layouts.
+                std::memcpy(new_codes_arr, codes, bytes_for(size));
                 std::memcpy(new_scales, scales, (size_t)size * sizeof(float));
                 std::memcpy(new_sqnorms, sqnorms, (size_t)size * sizeof(float));
                 std::memcpy(new_ids_arr, ids, (size_t)size * sizeof(int));
@@ -704,7 +671,13 @@ struct TQCluster {
             sqnorms = new_sqnorms;
             ids = new_ids_arr;
         }
-        std::memcpy(codes + (size_t)size * code_size, new_codes, (size_t)code_size * sizeof(uint8_t));
+        if (width > 1) {
+            int b = size / width, lane = size % width;
+            uint8_t* base = codes + (size_t)b * code_size * width + lane;
+            for (int d = 0; d < code_size; d++) base[(size_t)d * width] = new_codes[d];
+        } else {
+            std::memcpy(codes + (size_t)size * code_size, new_codes, (size_t)code_size * sizeof(uint8_t));
+        }
         scales[size] = scale;
         sqnorms[size] = sqnorm;
         ids[size] = id;
@@ -801,6 +774,13 @@ public:
     std::vector<int> search_ids;
     cph::TurboQuantizer tq_codebook;
 
+    // SIMD fast-scan engages when codes fit a register table (n_levels <= 16,
+    // i.e. tq_bits <= 4). Otherwise TQ clusters stay row-major + scalar score_ip.
+    bool tq_fastscan = false;
+    cph::fastscan::block_fn tq_fs_fn = nullptr;   // selected once by CPU detection
+    // Per-cluster storage width: blocked (kWidth) under fast scan, else row-major (0).
+    int tq_width() const { return tq_fastscan ? cph::fastscan::kWidth : 0; }
+
     // id -> list of (cluster_id, position_in_cluster) — one entry per soft assignment
     std::vector<std::vector<std::pair<int, int>>> id_to_location;
 
@@ -862,9 +842,9 @@ public:
         }
 
         if (use_tq()) {
-            for (auto& tc : tq_clusters) {
-                tc.set_code_size(dim);
-            }
+            tq_fastscan = (tq_bits <= 4);                 // n_levels <= 16 → register table
+            tq_fs_fn = cph::fastscan::select_block_fn();
+            for (auto& tc : tq_clusters) tc.set_layout(dim, tq_width());
         }
     }
 
@@ -942,13 +922,21 @@ public:
     void compact_tq_cluster(int cluster_id) {
         if (!use_tq()) return;
         TQCluster& tc = tq_clusters[cluster_id];
+        int W = tc.width;
         int write = 0;
         for (int read = 0; read < tc.size; read++) {
             int id = tc.ids[read];
             if (deleted_ids.count(id)) continue;
             if (write != read) {
-                std::memcpy(tc.codes + (size_t)write * dim,
-                            tc.codes + (size_t)read * dim, (size_t)dim * sizeof(uint8_t));
+                if (tc.is_blocked()) {
+                    // Move one vector between (block, lane) slots, dim bytes at stride W.
+                    uint8_t* src = tc.codes + (size_t)(read / W) * dim * W + (read % W);
+                    uint8_t* dst = tc.codes + (size_t)(write / W) * dim * W + (write % W);
+                    for (int d = 0; d < dim; d++) dst[(size_t)d * W] = src[(size_t)d * W];
+                } else {
+                    std::memcpy(tc.codes + (size_t)write * dim,
+                                tc.codes + (size_t)read * dim, (size_t)dim * sizeof(uint8_t));
+                }
                 tc.scales[write] = tc.scales[read];
                 tc.sqnorms[write] = tc.sqnorms[read];
                 tc.ids[write] = id;
@@ -956,6 +944,55 @@ public:
             write++;
         }
         tc.size = write;
+    }
+
+    // Score every live vector in a TQ cluster against a prepared query, appending
+    // {id, ‖q-v‖²-estimate} to `out`. Blocked clusters use the SIMD fast-scan
+    // kernel (quantized LUT in qlut, dequant via step/lo); row-major clusters use
+    // the scalar score_ip over the float tq_table. Both produce the same estimator
+    // up to the LUT's 8-bit quantization, which the exact rerank then resolves.
+    void tq_score_cluster(const TQCluster& tc, float q_sq, float tq_bias,
+                          const std::vector<float>& tq_table,
+                          const uint8_t* qlut, float step, float lo,
+                          std::vector<std::pair<int, float>>& out) const {
+        const bool check_del = !deleted_ids.empty();
+        if (tc.is_blocked()) {
+            const int W = tc.width;
+            const float dim_lo = (float)dim * lo;
+            uint32_t sums[cph::fastscan::kWidth];
+            int nb = tc.n_blocks();
+            for (int b = 0; b < nb; b++) {
+                const uint8_t* blk = tc.codes + (size_t)b * dim * W;
+                tq_fs_fn(blk, qlut, dim, sums);
+                int cnt = std::min(W, tc.size - b * W);
+                for (int v = 0; v < cnt; v++) {
+                    int idx = b * W + v;
+                    int id = tc.ids[idx];
+                    if (check_del && deleted_ids.count(id)) continue;
+                    float ip = (tq_bias + step * (float)sums[v] + dim_lo) * tc.scales[idx];
+                    out.push_back({id, q_sq + tc.sqnorms[idx] - 2.0f * ip});
+                }
+            }
+        } else {
+            for (int i = 0; i < tc.size; i++) {
+                int id = tc.ids[i];
+                if (check_del && deleted_ids.count(id)) continue;
+                const uint8_t* codes = tc.codes + (size_t)i * dim;
+                float ip = tq_codebook.score_ip(tq_table.data(), tq_bias, codes, tc.scales[i]);
+                out.push_back({id, tq_codebook.l2sq(q_sq, tc.sqnorms[i], ip)});
+            }
+        }
+    }
+
+    // Build the per-query quantized LUT for the fast-scan kernel from the float
+    // query table. No-op (leaves qlut empty) when fast scan is disabled.
+    void tq_build_qlut(const std::vector<float>& tq_table,
+                       std::vector<uint8_t>& qlut, float& step, float& lo) const {
+        step = 0.0f; lo = 0.0f;
+        if (!tq_fastscan) return;
+        qlut.resize((size_t)dim * cph::fastscan::kLutStride);
+        cph::fastscan::quantize_lut(tq_table.data(), dim, tq_codebook.n_levels,
+                                    qlut.data(), step, lo);
     }
 
     // Full compaction: evict all tombstones from every cluster, then clear
@@ -1182,7 +1219,7 @@ public:
             clusters.back().init(dim, path);
         }
         tq_clusters.emplace_back();
-        if (use_tq()) tq_clusters.back().set_code_size(dim);
+        if (use_tq()) tq_clusters.back().set_layout(dim, tq_width());
         cluster_live_count.push_back(0);   // new cluster starts with 0 live vectors
 
         // Reset the original cluster (live count will be rebuilt during redistribution)
@@ -1281,6 +1318,8 @@ public:
             float q_sq = 0.0f;
             for (int i = 0; i < dim; i++) q_sq += ptr[i] * ptr[i];
             tq_codebook.build_query_table(ptr, tq_table, tq_bias);
+            std::vector<uint8_t> qlut; float qstep, qlo;
+            tq_build_qlut(tq_table, qlut, qstep, qlo);
             const int rerank_k = 100;
 
             std::vector<std::pair<int, float>> tq_results;
@@ -1288,15 +1327,8 @@ public:
 
             for (int p = 0; p < probes; p++) {
                 int cluster_id = centroid_dists[p].first;
-                TQCluster& tq_cluster = tq_clusters[cluster_id];
-                for (int i = 0; i < tq_cluster.size; i++) {
-                    int id = tq_cluster.ids[i];
-                    if (deleted_ids.count(id)) continue;
-                    const uint8_t* codes = tq_cluster.codes + (size_t)i * dim;
-                    float ip = tq_codebook.score_ip(tq_table.data(), tq_bias, codes, tq_cluster.scales[i]);
-                    float tq_dist = tq_codebook.l2sq(q_sq, tq_cluster.sqnorms[i], ip);
-                    tq_results.push_back({id, tq_dist});
-                }
+                tq_score_cluster(tq_clusters[cluster_id], q_sq, tq_bias, tq_table,
+                                 qlut.data(), qstep, qlo, tq_results);
             }
 
             int n_tq = std::min(rerank_k, (int)tq_results.size());
@@ -1482,6 +1514,8 @@ public:
                 const float* query = queries + (size_t)q * dim;
                 for (int i = 0; i < dim; i++) q_sq += query[i] * query[i];
                 tq_codebook.build_query_table(query, tq_table, tq_bias);
+                std::vector<uint8_t> qlut; float qstep, qlo;
+                tq_build_qlut(tq_table, qlut, qstep, qlo);
 
                 for (int c = 0; c < n_clusters; c++)
                     sorted_dists[c] = {c, centroid_dists_sq[q * n_clusters + c]};
@@ -1492,15 +1526,8 @@ public:
 
                 for (int p = 0; p < probes; p++) {
                     int cluster_id = sorted_dists[p].first;
-                    TQCluster& tq_cluster = tq_clusters[cluster_id];
-                    for (int i = 0; i < tq_cluster.size; i++) {
-                        int id = tq_cluster.ids[i];
-                        if (deleted_ids.count(id)) continue;
-                        const uint8_t* codes = tq_cluster.codes + (size_t)i * dim;
-                        float ip = tq_codebook.score_ip(tq_table.data(), tq_bias, codes, tq_cluster.scales[i]);
-                        float dist = tq_codebook.l2sq(q_sq, tq_cluster.sqnorms[i], ip);
-                        results.push_back({id, dist});
-                    }
+                    tq_score_cluster(tq_clusters[cluster_id], q_sq, tq_bias, tq_table,
+                                     qlut.data(), qstep, qlo, results);
                 }
 
                 // Dedup for soft_k > 1
@@ -1867,7 +1894,7 @@ public:
                 ? mmap_dir + "/cluster_" + std::to_string(c) + ".bin"
                 : std::string();
             clusters[c].init(dim, path, /*truncate_new=*/use_mmap);
-            tq_clusters[c].set_code_size(dim);
+            tq_clusters[c].set_layout(dim, tq_width());
         }
     }
 
@@ -1966,6 +1993,21 @@ public:
             ? (float)total_live / n_clusters : 0.f;
         if (use_tq()) {
             stats["tq_bits"] = tq_bits;
+            // Which scoring route is active: SIMD fast-scan (the default for
+            // tq_bits<=4) vs the row-major scalar score_ip (tq_bits>4), and the
+            // selected kernel — confirms arch dispatch / generic fallback.
+            stats["tq_fastscan"] = tq_fastscan;
+            const char* kern = "scalar";
+            if (tq_fastscan) {
+#if defined(CPH_FS_ARM)
+                kern = "neon";
+#elif defined(CPH_FS_X86)
+                kern = cph::fastscan::simd_available() ? "avx2" : "scalar-block";
+#else
+                kern = "scalar-block";
+#endif
+            }
+            stats["tq_kernel"] = std::string(kern);
             size_t orig_size = (size_t)total_physical * dim * sizeof(float);
             size_t tq_size = (size_t)total_physical * (((size_t)tq_bits * dim + 7) / 8 + 8);
             stats["compression_ratio"] = tq_size > 0 ? (float)orig_size / tq_size : 0.f;

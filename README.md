@@ -209,15 +209,25 @@ references: [docs/source/theory.rst](docs/source/theory.rst).
 | Index | recall@10 | bytes/vec | compression |
 |---|---|---|---|
 | Copenhagen float | 0.9971 | 512 | 1.0× |
-| Legacy compressed path | 0.6463 | **528** | 0.97× |
+| Copenhagen TQ-4bit (SIMD fast-scan) | 0.8770 | 584 | 0.9× |
 | TurboVec 4-bit | 0.8476 | 68 | 7.5× |
 | TurboVec 2-bit | 0.6266 | 36 | 14.2× |
 | Copenhagen-TQ block VQ `B=2` | 0.9070 | 72 | 7.1× |
 | Copenhagen-TQ block VQ `B=4` | 0.7002 | 40 | 12.8× |
 
-The removed legacy compressed path was dominated on both axes. The removal
-rationale and repo-specific evidence are in [IVFPQ.md](IVFPQ.md). TurboQuant is
-the replacement.
+Copenhagen's in-index TQ path retains the float32 vectors (for exact rerank,
+deletes, and splits), so it trades memory for high recall and a fast SIMD scan
+rather than for compression — the memory win is the block-VQ path. The removed
+IVFPQ path was dominated on both axes; rationale and evidence in
+[IVFPQ.md](IVFPQ.md). TurboQuant is the replacement.
+
+**Scoring is SIMD-accelerated.** At `tq_bits<=4` (the default) the per-candidate
+TurboQuant scorer runs as a nibble-LUT *fast-scan* kernel — codes stored
+block-transposed, 32 vectors scored per dimension with one `vqtbl1q_u8` (NEON) /
+`pshufb` (AVX2), then the exact rerank resolves the 8-bit LUT. It is ~10–25×
+faster than the scalar loop, bit-exact with it, and recall-preserving; an
+unrecognized ISA falls back to a scalar-block kernel over the same layout. See
+[BENCHMARKS.md §6](BENCHMARKS.md).
 
 **Why TurboVec struggles at low dimension — and what we do about it.** After a
 random rotation, a unit vector's coordinates are Beta-distributed and, crucially,

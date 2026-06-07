@@ -2,6 +2,14 @@
 
 ## Completed
 
+- **SIMD fast-scan scorer** — `src/tq_fastscan.hpp`: nibble-LUT fast-scan for the
+  TurboQuant path (`tq_bits<=4`), replacing the scalar `score_ip` inner loop.
+  Codes stored block-transposed in `TQCluster` (`[block][dim][32]`); 32 vectors
+  scored per dimension with one `vqtbl1q_u8` (NEON) / `pshufb` (AVX2) over an
+  8-bit-quantized LUT, exact BLAS rerank unchanged. Runtime arch dispatch with a
+  scalar-block fallback; bit-exact with the scalar scorer; ~10–25× faster
+  (BENCHMARKS.md §6). `get_stats()["tq_kernel"]` reports the active kernel.
+
 - **Tombstone deletion** — O(1) `delete_vector`, lazy `compact_cluster` at
   search time, auto `compact_all` when tombstones exceed 10% of n_vectors.
   `cluster_live_count` decremented on delete; split decisions use live counts,

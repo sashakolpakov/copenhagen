@@ -1,8 +1,10 @@
 # Copenhagen — Benchmark Results
 
-Latest published run: `benchmarks/results/REPORT_20260607_000220.md` on Linux
-`5.15.0-143-generic x86_64`, Python `3.11.15`, full mode. Scripts are in
-`benchmarks/`.
+Latest published run: `benchmarks/results/REPORT_20260607_215454.md` on Linux
+`6.8.0-1046-nvidia x86_64` (Intel Xeon Platinum 8358, 30 vCPU), Python `3.12.3`,
+full mode — all 10 benchmarks green (faiss / hnsw / turbovec × churn / drift /
+scaling / static / compression). Reproduce with `python benchmarks/reproduce.py`.
+Recall figures are host-independent; insert/delete/QPS throughput is host-specific.
 
 ---
 
@@ -14,23 +16,23 @@ HNSW: M=32, efConstruction=64, efSearch=64.
 
 | Round | Live   | Del%  | CPH R@10 | HNSW+filter R@10 | HNSW+rebuild R@10 | CPH ins/s | HNSW-r ins/s | CPH del/s |
 |-------|--------|-------|----------|------------------|-------------------|-----------|--------------|-----------|
-| 1     | 35,700 |  0%   | 0.960    | 0.542            | 0.526             | 711,983   | 6,239        | 1,445,350 |
-| 2     | 25,690 | 30%   | 0.950    | 0.518            | 0.571             | 895,094   | 9,450        | 1,419,024 |
-| 3     | 18,683 | 51%   | 0.949    | 0.477            | 0.641             | 906,650   | 10,750       | 1,544,021 |
-| 4     | 13,779 | 65%   | 0.945    | 0.453            | 0.711             | 830,629   | 9,669        | 1,447,393 |
-| 5     | 10,346 | 74%   | 0.940    | 0.429            | 0.759             | 802,065   | 11,033       | 1,409,322 |
-| 6     | 7,943  | 81%   | 0.938    | 0.389            | 0.807             | 912,472   | 10,438       | 1,498,962 |
-| 7     | 6,261  | 86%   | 0.935    | 0.335            | 0.853             | 832,728   | 9,367        | 1,463,241 |
-| 8     | 5,083  | 89%   | 0.926    | 0.288            | 0.875             | 883,667   | 8,839        | 1,497,785 |
-| 9     | 4,259  | 91%   | 0.927    | 0.268            | 0.911             | 969,431   | 9,033        | 1,523,704 |
-| 10    | 3,682  | 93%   | 0.937    | 0.276            | 0.916             | 838,724   | 8,345        | 1,486,813 |
+| 1     | 35,700 |  0%   | 0.960    | 0.524            | 0.529             | 317,725   | 6,625        | 698,323   |
+| 2     | 25,690 | 30%   | 0.950    | 0.501            | 0.613             | 465,260   | 6,411        | 620,235   |
+| 3     | 18,683 | 51%   | 0.949    | 0.469            | 0.659             | 597,530   | 8,025        | 658,857   |
+| 4     | 13,779 | 65%   | 0.945    | 0.449            | 0.710             | 620,085   | 9,120        | 805,550   |
+| 5     | 10,346 | 74%   | 0.940    | 0.417            | 0.754             | 403,072   | 7,098        | 784,679   |
+| 6     | 7,943  | 81%   | 0.938    | 0.378            | 0.812             | 418,108   | 8,343        | 731,036   |
+| 7     | 6,261  | 86%   | 0.935    | 0.343            | 0.843             | 634,191   | 6,636        | 706,200   |
+| 8     | 5,083  | 89%   | 0.926    | 0.293            | 0.882             | 360,317   | 8,057        | 702,877   |
+| 9     | 4,259  | 91%   | 0.927    | 0.282            | 0.909             | 637,759   | 7,985        | 761,379   |
+| 10    | 3,682  | 93%   | 0.937    | 0.275            | 0.920             | 658,980   | 7,937        | 683,826   |
 
 **Key numbers at 93% churn**:
-- CPH: 0.937 recall, ~1.49M del/s, ~839k ins/s
-- HNSW+filter: 0.276 recall (graph clogging), no native delete
-- HNSW+rebuild: 0.916 recall, but requires full graph rebuild every round (~8.3k ins/s effective)
+- CPH: 0.937 recall, ~684k del/s, ~659k ins/s
+- HNSW+filter: 0.275 recall (graph clogging), no native delete
+- HNSW+rebuild: 0.920 recall, but requires full graph rebuild every round (~7.9k ins/s effective)
 
-CPH beats HNSW+rebuild on both final recall (+2.1pp) and update throughput, while
+CPH beats HNSW+rebuild on final recall (+1.7pp) and is ~80× faster on inserts, while
 avoiding the rebuild path entirely.
 
 ---
@@ -50,9 +52,9 @@ no longer part of Copenhagen's design discussion, see [IVFPQ.md](IVFPQ.md).
 | 10    | 3,682  | 93%   | 0.937    | 0.642           | 0.803            | 0.392             |
 
 **Insert throughput** (round 10, 1000-vector batch):
-- CPH: ~971,000 /s
+- CPH: ~603,000 /s (and ~1.15M deletes/s)
 - IVF+filter: add-only baseline, no retrain
-- IVF+rebuild: ~339,000 /s (full retrain each round)
+- IVF+rebuild: ~286,000 /s (full retrain each round)
 
 **Removed-path note**: the legacy product-quantized baseline sits around
 0.39–0.45 recall here, far below Copenhagen's 0.94-0.96. Details and rationale:
@@ -111,19 +113,58 @@ already holding n vectors. CPH and FAISS IVF use batch add; HNSW uses single-vec
 
 | n       | CPH µs/vec | CPH R@10 | IVF µs/vec | IVF R@10 | HNSW µs/vec | HNSW R@10 |
 |---------|-----------|----------|-----------|----------|------------|----------|
-| 5,000   | 1.18      | 0.991    | 0.50      | 0.951    | 75.96      | 1.000    |
-| 10,000  | 1.41      | 0.996    | 0.59      | 0.975    | 113.09     | 1.000    |
-| 25,000  | 1.39      | 0.996    | 0.59      | 0.970    | 214.41     | 1.000    |
-| 50,000  | 1.35      | 0.999    | 0.76      | 0.975    | 308.25     | 0.998    |
-| 100,000 | 1.82      | 0.999    | 0.54      | 0.985    | 512.70     | 0.995    |
+| 5,000   | 1.77      | 0.991    | 0.70      | 0.951    | 132.62     | 1.000    |
+| 10,000  | 2.25      | 0.996    | 0.82      | 0.975    | 209.91     | 0.999    |
+| 25,000  | 2.13      | 0.996    | 0.96      | 0.970    | 348.63     | 0.998    |
+| 50,000  | 2.56      | 0.999    | 0.83      | 0.975    | 509.77     | 0.997    |
+| 100,000 | 2.28      | 0.999    | 1.01      | 0.985    | 950.18     | 0.996    |
 
 **Insert cost change over 20× scale-up (5k → 100k):**
-- CPH: 1.54x — flat enough to remain **O(1)**
-- FAISS IVF: 1.08x — **O(1)**
-- HNSW: 6.75x — **O(log n)** + cache effects
+- CPH: 1.29x — flat enough to remain **O(1)**
+- FAISS IVF: 1.44x — **O(1)**
+- HNSW: 7.16x — **O(log n)** + cache effects
 
 Both CPH and FAISS IVF remain effectively flat in insert cost; HNSW is still much
 more expensive per inserted vector and lacks native tombstone delete.
+
+---
+
+## 6. TurboQuant Fast-Scan Scoring Kernel (`benchmarks/bench_score_ip.cpp`)
+
+The per-candidate TurboQuant scorer is the inner loop of every quantized search.
+At ≤4 bits each coordinate's table has ≤16 entries — one register-width byte
+table — so the scalar `score_ip` loop is replaced by a SIMD "fast scan" (FAISS /
+Quick-ADC style): codes are stored block-transposed (`[block][dim][32]`) and 32
+vectors are scored per dimension with one `vqtbl1q_u8` (NEON) / `pshufb` (AVX2)
+over an 8-bit-quantized LUT, then the existing exact BLAS rerank resolves the
+quantization. Microbenchmark (`-O3 -march=native`, 4-bit, ns per vector scored,
+lower is better; speedup vs the scalar `score_ip` on the same host).
+
+**Apple Silicon — NEON (width-32):**
+
+| dim | scalar ns/vec | fast-scan ns/vec | speedup |
+|----:|----:|----:|----:|
+| 128 | 71 | 3.2 | 22× |
+| 768 | 559 | 18.8 | 30× |
+| 1536 | 1179 | 38.5 | 31× |
+
+**Intel Xeon Platinum 8358 — AVX2 (width-32):**
+
+| dim | scalar ns/vec | fast-scan ns/vec | speedup |
+|----:|----:|----:|----:|
+| 128 | 172 | 6.9 | 25× |
+| 768 | 1069 | 85.3 | 12.5× |
+| 1536 | 2113 | 210 | 10× |
+
+On both ISAs the SIMD kernel is **bit-exact** with the scalar reference (0 sum
+mismatches across all blocks) and preserves **99.0%** of the scalar top-100
+candidate set. End-to-end (`tests/test_fastscan_recall.py`, run on both): 4-bit
+fast-scan recall tracks the exact-IVF path within **≤0.005** (NEON 0.443 vs 0.447
+exact at d=128; AVX2 0.431 vs 0.433), survives churn (delete + split + compaction)
+within ~0.05, and never resurfaces a deleted id. Fast scan is the default route
+for `tq_bits<=4`; on an unrecognized ISA the same blocked layout runs through a
+scalar-block fallback. `get_stats()["tq_kernel"]` reports the active kernel
+(`neon` / `avx2` / `scalar-block` / `scalar`).
 
 ---
 
