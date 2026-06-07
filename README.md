@@ -320,5 +320,4 @@ results/              Benchmark output (JSON)
 ## Acknowledgments
 
 Thanks to **Anthropic** and the **University of Austin (UATX)** for providing
-access to Claude Opus 4.8, which was used in developing this work (including the
-SIMD fast-scan kernel).
+access to Claude Opus 4.8, which was used in developing this work.
