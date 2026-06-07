@@ -6,8 +6,8 @@ Copenhagen — dynamic ANN with compression
 on an Inverted File (IVF) structure. It sustains continuous inserts and deletes
 without ever rebuilding — :math:`O(1)` amortized insert, :math:`O(1)` tombstone
 delete, soft multi-cluster assignment, and adaptive cluster splitting — and it is
-acquiring a compressed search path based on the TurboQuant scalar quantizer,
-extended with **block / sub-vector vector quantization** that repairs
+now has an integrated compressed search path based on the TurboQuant scalar
+quantizer, extended with **block / sub-vector vector quantization** that repairs
 TurboQuant's low-dimension weakness.
 
 The design goal, stated plainly:
@@ -55,9 +55,10 @@ The three-axis story
   recall@10 ≈ 0.93–0.95 at ~1.7 M inserts/s and ~2.8 M deletes/s, while FAISS
   IVF+filter decays to 0.66 and HNSW+filter to 0.52; the rebuild variants match
   recall only at 10–150 k inserts/s. See :ref:`benchmarks`.
-* **Compression (vs TurboVec / IVFPQ).** On normalized SIFT, TurboVec 4-bit
-  reaches 0.85 recall@10 at 68 B/vec (7.5×) while Copenhagen's current IVFPQ path
-  is *both larger (528 B) and worse (0.65)* — the gap the TurboQuant port closes.
+* **Compression (vs TurboVec / legacy baseline).** On normalized SIFT, TurboVec
+  4-bit reaches 0.85 recall@10 at 68 B/vec (7.5×) while Copenhagen's removed
+  legacy compressed path was *both larger (528 B) and worse (0.65)* — the gap
+  the integrated TurboQuant path closes. See ``IVFPQ.md`` in the repository root.
 * **Low dimension (the differentiator).** Scalar TurboQuant assumes coordinate
   independence, which the unit-sphere constraint violates at small :math:`d`
   (:ref:`lowd`). Block VQ recovers the joint structure: +12–14 pp recall at 2-bit

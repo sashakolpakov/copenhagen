@@ -38,9 +38,10 @@ avoiding the rebuild path entirely.
 ## 2. Streaming Churn vs FAISS IVF (`benchmark_ivf_churn.py`)
 
 **Scenario**: same as above. IVF: same 64 clusters, nprobe=32 — direct apples-to-apples
-with Copenhagen. IVFPQ: M=32 subquantizers, 8 bits (32 bytes/vec vs 512 for float32).
+with Copenhagen. For the removed FAISS product-quantized baseline and why it is
+no longer part of Copenhagen's design discussion, see [IVFPQ.md](IVFPQ.md).
 
-| Round | Live   | Del%  | CPH R@10 | IVF+filter R@10 | IVF+rebuild R@10 | IVFPQ+filter R@10 |
+| Round | Live   | Del%  | CPH R@10 | IVF+filter R@10 | IVF+rebuild R@10 | Legacy PQ baseline R@10 |
 |-------|--------|-------|----------|-----------------|------------------|-------------------|
 | 1     | 35,700 |  0%   | 0.960    | 0.815           | 0.815            | 0.432             |
 | 3     | 18,683 | 51%   | 0.949    | 0.789           | 0.802            | 0.426             |
@@ -53,8 +54,9 @@ with Copenhagen. IVFPQ: M=32 subquantizers, 8 bits (32 bytes/vec vs 512 for floa
 - IVF+filter: add-only baseline, no retrain
 - IVF+rebuild: ~339,000 /s (full retrain each round)
 
-**IVFPQ note**: at M=32 (16× compression vs float32), IVFPQ sits around 0.39–0.45
-recall here, far below Copenhagen's 0.94-0.96.
+**Removed-path note**: the legacy product-quantized baseline sits around
+0.39–0.45 recall here, far below Copenhagen's 0.94-0.96. Details and rationale:
+[IVFPQ.md](IVFPQ.md).
 
 ---
 
@@ -222,7 +224,7 @@ offloaded. Centroid pinning: 0.16 ms one-time cost.
 # Streaming churn: Copenhagen vs HNSW under 30% deletion/round
 python benchmarks/benchmark_hnsw_churn.py
 
-# Streaming churn: Copenhagen vs FAISS IVF and IVFPQ
+# Streaming churn: Copenhagen vs FAISS IVF and legacy PQ baseline
 python benchmarks/benchmark_ivf_churn.py
 
 # Distribution drift: MNIST → Fashion-MNIST

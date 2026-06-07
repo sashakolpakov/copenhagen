@@ -316,10 +316,10 @@ IVF+filter degrades from 0.815 to 0.642 recall over 10 churn rounds; Copenhagen
 holds 0.926–0.960. FAISS IVF+rebuild restores recall each round but lands around
 0.803 recall in the final round and ~339k inserts/s effective.
 
-**vs FAISS IVFPQ**: Product quantization reduces memory (32 bytes/vec at M=32
-vs 512 for float32) at the cost of recall. At the same 64 clusters / nprobe=32,
-IVFPQ achieves 0.392–0.446 recall@10 under churn. Copenhagen full precision:
-0.926–0.960.
+**vs FAISS product-quantized baseline**: the removed legacy PQ comparison lands
+at 0.392–0.446 recall@10 under churn at the same 64 clusters / nprobe=32.
+Historical details and removal rationale are in [IVFPQ.md](IVFPQ.md). Copenhagen
+full precision: 0.926–0.960.
 
 **vs AMPI**: AMPI uses affine fan cones with an Oja subspace sketch for
 per-cluster drift detection — a more principled geometric approach. It detects

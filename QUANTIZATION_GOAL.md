@@ -4,14 +4,14 @@
 
 Copenhagen is the strongest **dynamic-workload** ANN index we have: O(1) amortized
 insert, O(1) tombstone delete, soft multi-cluster assignment, adaptive splits.
-Its one weak spot is **compression**. The current `use_pq=True` path has two
+Its one weak spot is **compression**. The old compressed path had two
 problems:
 
 1. **It saves no memory.** The rerank step reads `clusters[c].vectors` — the full
    float32 vectors are still stored. PQ codes are added *on top*, so the index gets
    *bigger*, not smaller.
 2. **Recall collapses under real compression.** Our latest benchmark matrix shows
-   IVFPQ at 0.392–0.446 recall@10 at 16× compression under churn — less than
+   the removed PQ baseline at 0.392–0.446 recall@10 at 16× compression under churn — less than
    half of Copenhagen's float path (0.926–0.960).
 
 [TurboVec](https://github.com/RyanCodrai/turbovec) (Ryan Codrai) is the mirror
@@ -20,7 +20,7 @@ image: a **compressed static-ish** flat index built on Google Research's
 falls apart, and it's the quantizer — not the index structure — that does the work.
 
 **The opportunity is to take the best of both worlds:** keep Copenhagen's dynamic
-IVF structure, and replace the weak IVFPQ path with a TurboQuant scalar quantizer.
+IVF structure, and replace the weak legacy compressed path with a TurboQuant scalar quantizer.
 Result: an index that is *both* fully dynamic *and* genuinely compressed with good
 recall-per-byte.
 
@@ -78,8 +78,8 @@ the existing `-march=armv8-a` build).
 
 ## Success criteria
 
-1. **Recall-per-byte beats IVFPQ decisively.** Target: ≥ 0.85 recall@10 at 8× (4-bit)
-   and ≥ 0.75 at 16× (2-bit) on SIFT/synthetic — vs IVFPQ's 0.392–0.446 at 16×.
+1. **Recall-per-byte beats the removed baseline decisively.** Target: ≥ 0.85 recall@10 at 8× (4-bit)
+   and ≥ 0.75 at 16× (2-bit) on SIFT/synthetic — vs 0.392–0.446 at 16×.
 2. **Real memory reduction.** Compressed clusters store no float32; index size drops
    ~`32/bits ×` vs the float path (minus small per-vector overhead).
 3. **Dynamics intact.** Insert / delete / soft_k / split all pass existing tests
@@ -95,20 +95,19 @@ the existing `-march=armv8-a` build).
 | 768  | 0.5990    | 1.0000            | 0.8700    | 1.0000        | 15.4× / 7.8×        |
 | 1536 | 0.6704    | 1.0000            | 0.9008    | 1.0000        | 15.7× / 7.9×        |
 
-**IVFPQ reference (latest churn matrix): 0.392–0.446 @ 16×.**
+**Removed-path reference (latest churn matrix): 0.392–0.446 @ 16×.** See [IVFPQ.md](IVFPQ.md).
 
 Conclusions: (1) raw recall **rises with dimension** — exactly as the marginal
 theory predicts; d=128 (SIFT) is TurboQuant's worst case. (2) **4-bit
-compressed-only already beats IVFPQ decisively** (0.82–0.90 vs 0.392–0.446) at 7–8×
+compressed-only already beats the removed baseline decisively** (0.82–0.90 vs 0.392–0.446) at 7–8×
 with no float storage. (3) rerank@200 → ~0.99–1.00 at all bit widths, but rerank
 needs floats (see split tension). (4) TQ+ calibration adds a consistent +1–2pp.
 
-### Decision: cull IVFPQ (after the TQ path passes the same suite)
+### Decision: cull the legacy compressed path
 
-TurboQuant dominates IVFPQ at every operating point *and* actually reduces memory
-(IVFPQ today stores codes on top of full float32 — zero memory win). Land the
-quant path, port IVFPQ tests/benches to it, then delete `PQCodebook` /
-`PQCluster` / `use_pq`. No reason to maintain two compressors.
+TurboQuant dominates the removed baseline at every operating point *and* actually
+reduces memory. The quant path is now landed; `PQCodebook` / `PQCluster` /
+`use_pq` were deleted. Removal rationale: [IVFPQ.md](IVFPQ.md).
 
 ---
 
@@ -203,7 +202,7 @@ win is *largest at 2-bit* (+12–14pp) — exactly the aggressive-compression / 
 regime where the unit-sphere coordinate correlation dominates and scalar QY
 discards it. At 4-bit the gap narrows (fewer dims per block share less
 correlation, and scalar 4-bit is already decent). Net: **block VQ is the path** —
-it makes 2-bit (≈13–16×) genuinely usable where scalar/IVFPQ both fail.
+it makes 2-bit (≈13–16×) genuinely usable where scalar and the removed baseline both fail.
 
 **Lever #2 (anisotropic loss) — DONE, and the result is a finding, not a win.**
 First the broken block-local proxy was rejected (hurt everywhere). Then the
@@ -250,7 +249,7 @@ NEON nibble-LUT path — measure recall cost of 16 vs 256 codes/block.
 
 - [x] Phase 0 — Study TurboQuant + Copenhagen internals; formulate goal (this doc).
 - [x] Phase 1 — `src/turbo_quant.hpp`: rotation, Lloyd-Max codebook, TQ+, encode,
-      scalar scorer. Dependency-free, standalone-testable. (scalar = 1-D block VQ;
+      scalar scorer. Dependency-free, with dedicated microbenchmarks. (scalar = 1-D block VQ;
       the baseline the block-VQ prototype must beat.)
 - [x] Phase 2 — `src/tq_standalone_test.cpp`: recall-per-byte vs exact, dim sweep
       128/768/1536. Thesis + low-d failure mode proven (tables above).
@@ -261,11 +260,12 @@ NEON nibble-LUT path — measure recall cost of 16 vs 256 codes/block.
       Remaining: (c') correct ScaNN anisotropic; (d) E8 lattice reference;
       (e) residual-correction byte; (f) Kc=16 for the nibble-LUT path.
       Stretch target: d=128 2-bit raw → >0.75 (now 0.60; needs e/c'/rerank).
-- [ ] Phase 4 — Integrate the winning variant as a `quant="tq"` mode in
-      `dynamic_ivf.cpp` (`TQCluster`: codes + scale + ‖v‖² [+ residual byte]).
-      `decode()` for split k-means (splits run on decoded vectors — no float
-      store). Wire `python/core/__init__.py`, rebuild `.so`, smoke test.
+- [x] Phase 4 — Integrated a scalar-TQ `quant="tq"` mode in
+      `dynamic_ivf.cpp` (`TQCluster`: codes + scale + ‖v‖²), wired
+      `python/core/__init__.py`, rebuilt `.so`, and passed smoke/stress tests.
+      Remaining integration work is to upgrade this live path toward block-VQ /
+      decoded-split variants rather than to land TQ itself.
 - [ ] Phase 5 — NEON SIMD nibble-LUT kernel behind the block scorer (block → code
       → LUT layout is SIMD-native).
-- [ ] Phase 6 — Benchmark vs IVFPQ in `benchmarks/`, update BENCHMARKS.md, cull
-      IVFPQ once the TQ path passes the same suite.
+- [x] Phase 6 — Benchmarked vs the removed baseline in `benchmarks/`, updated
+      docs, and culled the old path after the TQ path passed the same suite.

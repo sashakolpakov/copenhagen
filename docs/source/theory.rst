@@ -293,10 +293,11 @@ align the data with the block structure).
    ``block_vq.BlockVQIndex``). The ScaNN anisotropic codebook was implemented,
    found not to help, and **culled to the** ``experiments/anisotropic`` **branch**.
    **Not implemented:** the :math:`E_8` lattice and OPQ (named as next reference
-   points, not results), and wiring the quantizer into
-   :file:`src/dynamic_ivf.cpp` as a first-class ``quant`` mode replacing IVFPQ
-   (the IVF + block-VQ combination is currently exercised through
-   ``BlockVQIndex``).
+   points, not results), and full block-VQ / E8 / OPQ integration into
+   :file:`src/dynamic_ivf.cpp`. The dynamic IVF index already ships a first-class
+   ``quant="tq"`` mode. The removed compressed path is documented in
+   ``IVFPQ.md``; the remaining work is to advance the integrated path beyond the
+   current scalar-TQ baseline.
 
 The bit budget at low dimension is *not* the constraint: :math:`d=128` at 4 bits
 is only 64 bytes, so 6–8 effective bits/coordinate via block VQ still sits at
@@ -361,14 +362,11 @@ core [Copenhagen]_ without special cases:
 
 * **Insert / delete** store / tombstone fixed-width codes — :math:`O(1)`,
   unchanged.
-* **Adaptive cluster splitting** runs :math:`k`-means on vectors *decoded* from
-  their codes (``decode`` reconstructs :math:`v \approx \lVert v\rVert\,
-  R^{\top}\hat x/\lVert\hat x\rVert`); split centroids are approximate, which is
-  acceptable since cluster centroids are themselves approximate. No float
-  side-store is required, so compression is real (unlike the current IVFPQ path,
-  which retains float32 — see :ref:`benchmarks`).
-* **Optional rerank** can use either the decoded vectors (modest lift) or an
-  opt-in float store (near-exact, costs memory).
+* **Adaptive cluster splitting** is compatible with decoded-vector workflows; the
+  current integrated ``quant="tq"`` path still retains float vectors for exact
+  rerank and split/rebalance operations.
+* **Optional rerank** in the current implementation is exact and uses the stored
+  float vectors after TurboQuant candidate scoring.
 
 This is the construction by which Copenhagen aims to keep its dynamics advantage
 over FAISS/HNSW *and* acquire TurboVec-class compression — with the low-:math:`d`

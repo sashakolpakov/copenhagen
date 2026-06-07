@@ -21,7 +21,7 @@ One command
    python3 benchmarks/reproduce.py --quick    # small sizes, fast smoke
    python3 benchmarks/reproduce.py --only compression
 
-``reproduce.py`` builds the C++ extension and the standalone quantization
+``reproduce.py`` builds the C++ extension and the quantization microbenchmark
 harnesses, installs the comparison libraries (``faiss-cpu``, ``hnswlib``,
 ``turbovec``, ``h5py``), downloads the ANN-benchmark datasets, runs the dynamics,
 drift, and compression benchmarks, and writes a timestamped Markdown report with
@@ -39,9 +39,8 @@ Fairness conventions
   FAISS-flat and HNSW it appears as a ``+rebuild`` baseline. Its dynamics story
   is insert/rebuild *throughput*, not delete.
 * **Recall-per-byte.** Compression results report recall@10 *and* bytes/vector;
-  one without the other is meaningless. Copenhagen's IVFPQ figure includes the
-  retained float32 (its codes are stored *on top* of the full vectors), which is
-  why its byte count exceeds float.
+  one without the other is meaningless. For the removed PQ baseline and why it
+  was culled, see ``IVFPQ.md`` in the repository root.
 
 
 Dynamics — vs FAISS IVF and HNSW
@@ -88,8 +87,8 @@ Copenhagen stays near rebuild-level recall while updating much faster, and never
 goes offline.
 
 
-Compression — Copenhagen vs TurboVec vs IVFPQ
-=============================================
+Compression — Copenhagen vs TurboVec vs legacy baseline
+=======================================================
 
 .. code-block:: bash
 
@@ -107,7 +106,7 @@ Compression — Copenhagen vs TurboVec vs IVFPQ
      - 0.9971
      - 512
      - 1.0×
-   * - Copenhagen IVFPQ (M=16)
+   * - Legacy compressed path
      - 0.6463
      - 528
      - *0.97× (larger than float in absolute bytes)*
@@ -128,15 +127,18 @@ Compression — Copenhagen vs TurboVec vs IVFPQ
      - 40
      - 12.8×
 
-IVFPQ is dominated on both axes; TurboVec wins bytes decisively. This is the
-motivation for the TurboQuant port.
+The removed legacy compressed path was dominated on both axes. Details and
+removal rationale are in ``IVFPQ.md``. TurboVec still wins bytes decisively in
+this comparison; that is the motivation for continuing to improve the
+integrated TurboQuant path.
 
 
-Quantizer micro-benchmarks (standalone C++)
-===========================================
+Quantizer micro-benchmarks
+==========================
 
-These isolate the quantizer from the index and measure recall-per-byte against
-exact brute force.
+These isolate the quantizer logic from the full dynamic index and measure
+recall-per-byte against exact brute force. They are diagnostic harnesses, not a
+separate product mode.
 
 .. code-block:: bash
 
