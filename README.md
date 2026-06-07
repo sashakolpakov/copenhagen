@@ -316,3 +316,9 @@ results/              Benchmark output (JSON)
 - **ScaNN** (Guo et al., ICML 2020) — anisotropic quantization loss (implemented and evaluated; see theory docs).
 - **Product Quantization** (Jégou et al., TPAMI 2011) — the sub-vector codebook + LUT layout block VQ adopts.
 - **AMPI** ([github.com/sashakolpakov/ampi](https://github.com/sashakolpakov/ampi)) — Adaptive multi-projection index with per-cluster Oja drift detection. Recommended when directional drift signals are needed rather than pure insert throughput; used as comparison baseline in drift benchmarks.
+
+## Acknowledgments
+
+Thanks to **Anthropic** and the **University of Austin (UATX)** for providing
+access to Claude Opus 4.8, which was used in developing this work (including the
+SIMD fast-scan kernel).

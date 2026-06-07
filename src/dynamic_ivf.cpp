@@ -1331,6 +1331,9 @@ public:
                                  qlut.data(), qstep, qlo, tq_results);
             }
 
+            if (tq_results.empty())
+                return py::make_tuple(py::list(), py::list());
+
             int n_tq = std::min(rerank_k, (int)tq_results.size());
             std::partial_sort(tq_results.begin(), tq_results.begin() + n_tq, tq_results.end(),
                               [](const auto& a, const auto& b) { return a.second < b.second; });
