@@ -102,7 +102,7 @@ Centroids are pinned on device once at train time; only `(n, soft_k)` argmin ind
 | `soft_k` | 1 | Clusters each vector is indexed in. `soft_k=2` matches FAISS rebuild recall on drift benchmarks |
 | `split_threshold` | 3.0 | Split a cluster when `live_size > mean_size × threshold` |
 | `max_split_iters` | 10 | Mini k-means iterations inside `split_cluster` |
-| `use_pq` | False | Product Quantization for compressed storage and faster approximate search |
+| `quant` | `"none"` | Quantized scan mode. Use `quant="tq"` for TurboQuant; IVFPQ was removed |
 | `use_mmap` | False | Memory-map cluster storage for indexes larger than RAM |
 
 `split_threshold` and `soft_k` are writable on the index object at any time:
@@ -209,15 +209,16 @@ references: [docs/source/theory.rst](docs/source/theory.rst).
 | Index | recall@10 | bytes/vec | compression |
 |---|---|---|---|
 | Copenhagen float | 0.9971 | 512 | 1.0× |
-| Copenhagen **IVFPQ** (M=16) | 0.6463 | **528** | 0.97× |
+| Copenhagen **IVFPQ** (removed) | 0.6463 | **528** | 0.97× |
 | TurboVec 4-bit | 0.8476 | 68 | 7.5× |
 | TurboVec 2-bit | 0.6266 | 36 | 14.2× |
 | Copenhagen-TQ block VQ `B=2` | 0.9070 | 72 | 7.1× |
 | Copenhagen-TQ block VQ `B=4` | 0.7002 | 40 | 12.8× |
 
-Copenhagen's *current* IVFPQ path is dominated on both axes — it stores PQ codes
-*on top of* retained float32, so it is bigger **and** lower-recall. TurboQuant is
-the replacement.
+Copenhagen's former IVFPQ path was dominated on both axes — it stored PQ codes
+*on top of* retained float32, so it was bigger **and** lower-recall. It has been
+removed completely. The removal rationale and repo-specific evidence are in
+[IVFPQ.md](IVFPQ.md). TurboQuant is the replacement.
 
 **Why TurboVec struggles at low dimension — and what we do about it.** After a
 random rotation, a unit vector's coordinates are Beta-distributed and, crucially,
@@ -239,10 +240,10 @@ implemented the ScaNN anisotropic loss and found it *does not help here* — the
 length-renormalization already corrects the parallel residual it targets (see
 the theory docs for the full negative result).
 
-> **Status.** The quantizer is implemented and benchmarked **standalone**
-> (`src/turbo_quant.hpp`, `src/block_quant.hpp`). Wiring it into the live index
-> (`src/dynamic_ivf.cpp`) as a `quant="tq"` mode that replaces IVFPQ — and the
-> E8 / OPQ extensions — are in progress. See
+> **Status.** `quant="tq"` is now the live compressed-search mode in
+> [`src/dynamic_ivf.cpp`](src/dynamic_ivf.cpp). IVFPQ was removed completely for
+> underperformance. The next compression work is block-VQ / E8 / OPQ on top of
+> the TurboQuant path. See
 > [QUANTIZATION_GOAL.md](QUANTIZATION_GOAL.md).
 
 ### Reproduce everything

@@ -25,16 +25,15 @@ class CopenhagenIndex:
     Search remains on CPU (single-query centroid ranking is too small to benefit).
     """
 
-    def __init__(self, dim, n_clusters, nprobe=1, use_pq=False, pq_m=8, pq_ks=256, soft_k=1,
+    def __init__(self, dim, n_clusters, nprobe=1, quant="none", tq_bits=4, soft_k=1,
                  use_mmap=False, mmap_dir="", device=None):
         """
         Args:
             dim: Dimension of the vectors
             n_clusters: Number of IVF clusters (Voronoi cells)
             nprobe: Number of clusters to search per query
-            use_pq: Use Product Quantization for faster search
-            pq_m: Number of PQ subspaces (higher = more accurate, slower)
-            pq_ks: Number of centroids per subspace (256 = 8 bits)
+            quant: Quantized scan mode. `"none"` disables compression, `"tq"` enables TurboQuant.
+            tq_bits: Bits per coordinate for TurboQuant (`quant="tq"`)
             soft_k: Number of clusters each vector is indexed in (1 = standard IVF)
             use_mmap: Store cluster vectors in memory-mapped files (for large datasets)
             mmap_dir: Directory for mmap files (required when use_mmap=True)
@@ -44,13 +43,14 @@ class CopenhagenIndex:
         self.dim = dim
         self.n_clusters = n_clusters
         self.nprobe = nprobe
-        self.use_pq = use_pq
+        self.quant = quant
+        self.tq_bits = tq_bits
 
         if use_mmap:
             os.makedirs(mmap_dir, exist_ok=True)
 
-        self._index = DynamicIVF(dim, n_clusters, nprobe, 1 if use_pq else 0,
-                                 pq_m, pq_ks, soft_k, use_mmap, mmap_dir)
+        self._index = DynamicIVF(dim, n_clusters, nprobe, quant,
+                                 tq_bits, soft_k, use_mmap, mmap_dir)
 
         # GPU state — None means CPU-only path
         self._device       = device          # e.g. "cuda", "mps", "cpu", or None
@@ -287,7 +287,8 @@ class CopenhagenIndex:
             "n_clusters":     nc,
             "n_vectors":      stats["n_vectors"],
             "nprobe":         self.nprobe,
-            "use_pq":         self.use_pq,
+            "quant":          self.quant,
+            "tq_bits":        self.tq_bits,
             "soft_k":         int(idx.soft_k),
             "split_threshold":float(idx.split_threshold),
             "max_split_iters":int(idx.max_split_iters),
@@ -312,12 +313,12 @@ class CopenhagenIndex:
         obj.dim        = meta["dim"]
         obj.n_clusters = meta["n_clusters"]
         obj.nprobe     = meta["nprobe"]
-        obj.use_pq     = meta["use_pq"]
+        obj.quant      = meta["quant"]
+        obj.tq_bits    = meta["tq_bits"]
 
         obj._index = DynamicIVF(
-            meta["dim"], meta["n_clusters"], meta["nprobe"],
-            1 if meta["use_pq"] else 0,
-            meta.get("pq_m", 8), meta.get("pq_ks", 256),
+            meta["dim"], meta["n_clusters"], meta["nprobe"], obj.quant,
+            obj.tq_bits,
             meta["soft_k"],
             is_mmap, mmap_dir,
             False,  # truncate_mmap_files=False: existing .bin files hold valid data

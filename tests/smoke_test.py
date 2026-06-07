@@ -166,14 +166,14 @@ assert idx_wa._index.soft_k == 2
 assert idx_wa._index.max_split_iters == 5
 print("writable attributes: OK")
 
-# ── use_pq=True basic smoke ───────────────────────────────────────────────────
+# ── quant="tq" basic smoke ────────────────────────────────────────────────────
 pq_data = rng.standard_normal((500, 64)).astype("float32")
-idx_pq = CopenhagenIndex(dim=64, n_clusters=16, nprobe=8, use_pq=True, pq_m=8)
+idx_pq = CopenhagenIndex(dim=64, n_clusters=16, nprobe=8, quant="tq", tq_bits=4)
 idx_pq.add(pq_data)
 ids_pq, dists_pq = idx_pq.search(pq_data[0], k=10)
 assert len(ids_pq) == 10, f"PQ search: expected 10 results, got {len(ids_pq)}"
 assert 0 in ids_pq, "PQ search: nearest to data[0] should include itself"
-print("use_pq=True: OK")
+print('quant="tq": OK')
 
 # ── mmap basic smoke ──────────────────────────────────────────────────────────
 with tempfile.TemporaryDirectory() as mmap_dir:

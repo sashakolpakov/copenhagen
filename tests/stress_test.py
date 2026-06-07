@@ -390,12 +390,12 @@ def compact_evicts_physically():
 
 
 @_register
-def pq_mode_recall():
-    """use_pq=True must achieve reasonable recall and return no deleted IDs."""
+def tq_mode_recall():
+    """quant="tq" must achieve reasonable recall and return no deleted IDs."""
     rng = np.random.default_rng(55)
     d = 64
     data = rng.standard_normal((1000, d)).astype('float32')
-    idx = CopenhagenIndex(dim=d, n_clusters=16, nprobe=8, use_pq=True, pq_m=8)
+    idx = CopenhagenIndex(dim=d, n_clusters=16, nprobe=8, quant="tq", tq_bits=4)
     idx.add(data)
 
     # Delete some vectors; they must not appear in results
@@ -410,13 +410,13 @@ def pq_mode_recall():
     for q in qs:
         ids, _ = idx.search(q, k=10)
         assert not (set(ids) & set(to_delete)), \
-            f"PQ: deleted ID in results: {set(ids) & set(to_delete)}"
+            f'TQ: deleted ID in results: {set(ids) & set(to_delete)}'
         found_ids.append(ids)
 
     # Remap gt to global IDs (gt is relative to data[50:])
     gt_global = gt + 50
     rec = _recall(gt_global, found_ids, 10)
-    assert rec >= 0.40, f"PQ recall@10 = {rec:.3f} < 0.40"
+    assert rec >= 0.40, f"TQ recall@10 = {rec:.3f} < 0.40"
 
 
 @_register

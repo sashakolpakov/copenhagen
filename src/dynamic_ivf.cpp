@@ -41,6 +41,8 @@
 #include <string>
 #include <stdexcept>
 
+#include "turbo_quant.hpp"
+
 #if !defined(_WIN32)
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -617,6 +619,99 @@ struct PQCluster {
     }
 };
 
+struct TQCluster {
+    uint8_t* codes;
+    float* scales;
+    float* sqnorms;
+    int* ids;
+    int size;
+    int capacity;
+    int code_size;
+
+    TQCluster()
+        : codes(nullptr), scales(nullptr), sqnorms(nullptr), ids(nullptr),
+          size(0), capacity(0), code_size(0) {}
+
+    TQCluster(TQCluster&& other) noexcept
+        : codes(other.codes), scales(other.scales), sqnorms(other.sqnorms), ids(other.ids),
+          size(other.size), capacity(other.capacity), code_size(other.code_size) {
+        other.codes = nullptr;
+        other.scales = nullptr;
+        other.sqnorms = nullptr;
+        other.ids = nullptr;
+        other.size = 0;
+        other.capacity = 0;
+        other.code_size = 0;
+    }
+
+    TQCluster& operator=(TQCluster&& other) noexcept {
+        if (this != &other) {
+            if (codes) free(codes);
+            if (scales) free(scales);
+            if (sqnorms) free(sqnorms);
+            if (ids) free(ids);
+            codes = other.codes; other.codes = nullptr;
+            scales = other.scales; other.scales = nullptr;
+            sqnorms = other.sqnorms; other.sqnorms = nullptr;
+            ids = other.ids; other.ids = nullptr;
+            size = other.size; other.size = 0;
+            capacity = other.capacity; other.capacity = 0;
+            code_size = other.code_size;
+        }
+        return *this;
+    }
+
+    TQCluster(const TQCluster&) = delete;
+    TQCluster& operator=(const TQCluster&) = delete;
+
+    ~TQCluster() {
+        if (codes) free(codes);
+        if (scales) free(scales);
+        if (sqnorms) free(sqnorms);
+        if (ids) free(ids);
+    }
+
+    void set_code_size(int n) { code_size = n; }
+
+    void add_codes(const uint8_t* new_codes, int code_size_in, float scale, float sqnorm, int id) {
+        if (code_size == 0) code_size = code_size_in;
+        if (code_size != code_size_in) throw std::runtime_error("TQ code size mismatch");
+        if (size >= capacity) {
+            capacity = capacity == 0 ? 64 : capacity * 2;
+            uint8_t* new_codes_arr = (uint8_t*)malloc((size_t)capacity * code_size * sizeof(uint8_t));
+            float* new_scales = (float*)malloc((size_t)capacity * sizeof(float));
+            float* new_sqnorms = (float*)malloc((size_t)capacity * sizeof(float));
+            int* new_ids_arr = (int*)malloc((size_t)capacity * sizeof(int));
+            if (!new_codes_arr || !new_scales || !new_sqnorms || !new_ids_arr) {
+                free(new_codes_arr);
+                free(new_scales);
+                free(new_sqnorms);
+                free(new_ids_arr);
+                throw std::bad_alloc();
+            }
+            if (codes) {
+                std::memcpy(new_codes_arr, codes, (size_t)size * code_size * sizeof(uint8_t));
+                std::memcpy(new_scales, scales, (size_t)size * sizeof(float));
+                std::memcpy(new_sqnorms, sqnorms, (size_t)size * sizeof(float));
+                std::memcpy(new_ids_arr, ids, (size_t)size * sizeof(int));
+                free(codes);
+                free(scales);
+                free(sqnorms);
+                free(ids);
+            }
+            codes = new_codes_arr;
+            scales = new_scales;
+            sqnorms = new_sqnorms;
+            ids = new_ids_arr;
+        }
+        std::memcpy(codes + (size_t)size * code_size, new_codes, (size_t)code_size * sizeof(uint8_t));
+        scales[size] = scale;
+        sqnorms[size] = sqnorm;
+        ids[size] = id;
+        size++;
+    }
+};
+
 inline void blas_l2_distances(const float* queries, int nq, int d,
                               const float* vecs, int nv,
                               float* dists) {
@@ -689,9 +784,9 @@ public:
     int dim;
     int n_clusters;
     int nprobe;
-    int use_pq;
-    int pq_m;
-    int pq_ks;
+    std::string quant;
+    int tq_bits;
+    bool tq_calibrate;
     bool        use_mmap;
     std::string mmap_dir;
     int soft_k;           // number of clusters each vector is indexed in (1 = standard)
@@ -702,9 +797,9 @@ public:
     int n_vectors;
 
     std::vector<Cluster> clusters;
-    std::vector<PQCluster> pq_clusters;
+    std::vector<TQCluster> tq_clusters;
     std::vector<int> search_ids;
-    PQCodebook pq_codebook;
+    cph::TurboQuantizer tq_codebook;
 
     // id -> list of (cluster_id, position_in_cluster) — one entry per soft assignment
     std::vector<std::vector<std::pair<int, int>>> id_to_location;
@@ -731,12 +826,12 @@ public:
 
     std::mt19937 rng;
 
-    DynamicIVF(int dim, int n_clusters, int nprobe = 1, int use_pq = 0,
-               int pq_m = 8, int pq_ks = 256, int soft_k = 1,
+    DynamicIVF(int dim, int n_clusters, int nprobe = 1,
+               const std::string& quant = "none", int tq_bits = 4, int soft_k = 1,
                bool use_mmap = false, const std::string& mmap_dir = "",
                bool truncate_mmap_files = true)
-        : dim(dim), n_clusters(n_clusters), nprobe(nprobe), use_pq(use_pq),
-          pq_m(pq_m), pq_ks(pq_ks), soft_k(soft_k),
+        : dim(dim), n_clusters(n_clusters), nprobe(nprobe), quant(quant),
+          tq_bits(std::max(1, std::min(tq_bits, 8))), tq_calibrate(true), soft_k(soft_k),
           use_mmap(use_mmap), mmap_dir(mmap_dir),
           split_threshold(3.0f), max_split_iters(10) {
 
@@ -753,7 +848,7 @@ public:
         search_ids.resize(max_vectors_per_probe);
 
         clusters.resize(n_clusters);
-        pq_clusters.resize(n_clusters);
+        tq_clusters.resize(n_clusters);
         cluster_live_count.resize(n_clusters, 0);
         id_to_location.resize(1000000);
         search_seen.assign(1000000, 0);
@@ -766,13 +861,14 @@ public:
             clusters[c].init(dim, path, /*truncate_new=*/use_mmap && truncate_mmap_files);
         }
 
-        if (use_pq) {
-            pq_codebook.init(pq_m, pq_ks, dim);
-            for (auto& pc : pq_clusters) {
-                pc.set_m(pq_m);
+        if (use_tq()) {
+            for (auto& tc : tq_clusters) {
+                tc.set_code_size(dim);
             }
         }
     }
+
+    bool use_tq() const { return quant == "tq"; }
 
     ~DynamicIVF() {
         free(centroids);
@@ -843,21 +939,23 @@ public:
         cl.size = write;
     }
 
-    void compact_pq_cluster(int cluster_id) {
-        if (!use_pq) return;
-        PQCluster& pc = pq_clusters[cluster_id];
+    void compact_tq_cluster(int cluster_id) {
+        if (!use_tq()) return;
+        TQCluster& tc = tq_clusters[cluster_id];
         int write = 0;
-        for (int read = 0; read < pc.size; read++) {
-            int id = pc.ids[read];
+        for (int read = 0; read < tc.size; read++) {
+            int id = tc.ids[read];
             if (deleted_ids.count(id)) continue;
             if (write != read) {
-                std::memcpy(pc.codes + write * pq_m,
-                            pc.codes + read * pq_m, pq_m);
-                pc.ids[write] = id;
+                std::memcpy(tc.codes + (size_t)write * dim,
+                            tc.codes + (size_t)read * dim, (size_t)dim * sizeof(uint8_t));
+                tc.scales[write] = tc.scales[read];
+                tc.sqnorms[write] = tc.sqnorms[read];
+                tc.ids[write] = id;
             }
             write++;
         }
-        pc.size = write;
+        tc.size = write;
     }
 
     // Full compaction: evict all tombstones from every cluster, then clear
@@ -871,7 +969,7 @@ public:
                 if (deleted_ids.count(clusters[c].ids[i])) has_deleted = true;
             if (has_deleted) {
                 compact_cluster(c);
-                compact_pq_cluster(c);
+                compact_tq_cluster(c);
             }
         }
         deleted_ids.clear();
@@ -956,10 +1054,11 @@ public:
 
             id_to_location[id].push_back({cluster_id, pos});
             cluster_live_count[cluster_id]++;
-            if (use_pq) {
-                std::vector<uint8_t> codes(pq_m);
-                pq_codebook.encode(data, dim, codes.data());
-                pq_clusters[cluster_id].add_codes(codes.data(), pq_m, id);
+            if (use_tq()) {
+                std::vector<uint8_t> codes(dim);
+                float scale = 0.0f, sqnorm = 0.0f;
+                tq_codebook.encode(data, codes.data(), &scale, &sqnorm);
+                tq_clusters[cluster_id].add_codes(codes.data(), dim, scale, sqnorm, id);
             }
         }
         n_vectors++;
@@ -977,10 +1076,11 @@ public:
 
             id_to_location[id].push_back({cluster_id, pos});
             cluster_live_count[cluster_id]++;
-            if (use_pq) {
-                std::vector<uint8_t> codes(pq_m);
-                pq_codebook.encode(data, dim, codes.data());
-                pq_clusters[cluster_id].add_codes(codes.data(), pq_m, id);
+            if (use_tq()) {
+                std::vector<uint8_t> codes(dim);
+                float scale = 0.0f, sqnorm = 0.0f;
+                tq_codebook.encode(data, codes.data(), &scale, &sqnorm);
+                tq_clusters[cluster_id].add_codes(codes.data(), dim, scale, sqnorm, id);
             }
         }
         n_vectors++;
@@ -1081,15 +1181,15 @@ public:
                 : std::string();
             clusters.back().init(dim, path);
         }
-        pq_clusters.emplace_back();
-        if (use_pq) pq_clusters.back().set_m(pq_m);
+        tq_clusters.emplace_back();
+        if (use_tq()) tq_clusters.back().set_code_size(dim);
         cluster_live_count.push_back(0);   // new cluster starts with 0 live vectors
 
         // Reset the original cluster (live count will be rebuilt during redistribution)
         clusters[cluster_id].size = 0;
         std::memset(clusters[cluster_id].vec_sum, 0, dim * sizeof(float));
         cluster_live_count[cluster_id] = 0;
-        if (use_pq) pq_clusters[cluster_id].size = 0;
+        if (use_tq()) tq_clusters[cluster_id].size = 0;
 
         // Redistribute saved vectors
         for (int i = 0; i < old_size; i++) {
@@ -1101,10 +1201,11 @@ public:
             clusters[target].add_vector(old_vecs.data() + i * dim, dim, old_ids[i]);
 
 
-            if (use_pq) {
-                std::vector<uint8_t> codes(pq_m);
-                pq_codebook.encode(old_vecs.data() + i * dim, dim, codes.data());
-                pq_clusters[target].add_codes(codes.data(), pq_m, old_ids[i]);
+            if (use_tq()) {
+                std::vector<uint8_t> codes(dim);
+                float scale = 0.0f, sqnorm = 0.0f;
+                tq_codebook.encode(old_vecs.data() + i * dim, codes.data(), &scale, &sqnorm);
+                tq_clusters[target].add_codes(codes.data(), dim, scale, sqnorm, old_ids[i]);
             }
 
             cluster_live_count[target]++;
@@ -1174,56 +1275,59 @@ public:
             return py::make_tuple(py::list(), py::list());
         }
 
-        if (use_pq) {
-            pq_codebook.compute_precomputed_tables(ptr, dim);
+        if (use_tq()) {
+            std::vector<float> tq_table;
+            float tq_bias = 0.0f;
+            float q_sq = 0.0f;
+            for (int i = 0; i < dim; i++) q_sq += ptr[i] * ptr[i];
+            tq_codebook.build_query_table(ptr, tq_table, tq_bias);
             const int rerank_k = 100;
 
-            std::vector<std::pair<int, float>> pq_results;
-            pq_results.reserve(total_vectors);
+            std::vector<std::pair<int, float>> tq_results;
+            tq_results.reserve(total_vectors);
 
             for (int p = 0; p < probes; p++) {
                 int cluster_id = centroid_dists[p].first;
-                PQCluster& pq_cluster = pq_clusters[cluster_id];
-                for (int i = 0; i < pq_cluster.size; i++) {
-                    int id = pq_cluster.ids[i];
+                TQCluster& tq_cluster = tq_clusters[cluster_id];
+                for (int i = 0; i < tq_cluster.size; i++) {
+                    int id = tq_cluster.ids[i];
                     if (deleted_ids.count(id)) continue;
-                    uint8_t* codes = pq_cluster.codes + i * pq_m;
-                    float pq_dist = 0;
-                    for (int m = 0; m < pq_m; m++)
-                        pq_dist += pq_codebook.precomputed_tables[m][codes[m]];
-                    pq_results.push_back({id, pq_dist});
+                    const uint8_t* codes = tq_cluster.codes + (size_t)i * dim;
+                    float ip = tq_codebook.score_ip(tq_table.data(), tq_bias, codes, tq_cluster.scales[i]);
+                    float tq_dist = tq_codebook.l2sq(q_sq, tq_cluster.sqnorms[i], ip);
+                    tq_results.push_back({id, tq_dist});
                 }
             }
 
-            int n_pq = std::min(rerank_k, (int)pq_results.size());
-            std::partial_sort(pq_results.begin(), pq_results.begin() + n_pq, pq_results.end(),
+            int n_tq = std::min(rerank_k, (int)tq_results.size());
+            std::partial_sort(tq_results.begin(), tq_results.begin() + n_tq, tq_results.end(),
                               [](const auto& a, const auto& b) { return a.second < b.second; });
 
             // Dedup (soft_k > 1 means same id may appear in multiple clusters)
             if (soft_k > 1) {
                 std::unordered_set<int> seen;
                 int w = 0;
-                for (int i = 0; i < n_pq; i++)
-                    if (seen.insert(pq_results[i].first).second)
-                        pq_results[w++] = pq_results[i];
-                n_pq = w;
+                for (int i = 0; i < n_tq; i++)
+                    if (seen.insert(tq_results[i].first).second)
+                        tq_results[w++] = tq_results[i];
+                n_tq = w;
             }
 
-            std::vector<float> rerank_vectors(n_pq * dim);
-            for (int i = 0; i < n_pq; i++) {
-                int id = pq_results[i].first;
+            std::vector<float> rerank_vectors((size_t)n_tq * dim);
+            for (int i = 0; i < n_tq; i++) {
+                int id = tq_results[i].first;
                 auto [c, pos] = id_to_location[id][0];
                 std::memcpy(rerank_vectors.data() + i * dim,
                             clusters[c].vectors + pos * dim, dim * sizeof(float));
             }
 
-            std::vector<float> exact_dists(n_pq);
-            blas_l2_distances(ptr, 1, dim, rerank_vectors.data(), n_pq, exact_dists.data());
+            std::vector<float> exact_dists(n_tq);
+            blas_l2_distances(ptr, 1, dim, rerank_vectors.data(), n_tq, exact_dists.data());
 
             std::vector<std::pair<int, float>> final_results;
-            final_results.reserve(n_pq);
-            for (int i = 0; i < n_pq; i++)
-                final_results.push_back({pq_results[i].first, exact_dists[i]});
+            final_results.reserve(n_tq);
+            for (int i = 0; i < n_tq; i++)
+                final_results.push_back({tq_results[i].first, exact_dists[i]});
 
             int result_count = std::min(n_results, (int)final_results.size());
             std::partial_sort(final_results.begin(), final_results.begin() + result_count,
@@ -1286,7 +1390,7 @@ public:
                         if (deleted_ids.count(cluster.ids[i])) has_deleted = true;
                     if (has_deleted) {
                         compact_cluster(cid);
-                        compact_pq_cluster(cid);
+                        compact_tq_cluster(cid);
                     }
                 }
 
@@ -1370,9 +1474,14 @@ public:
 
         if (nq == 0) return py::make_tuple(all_ids, all_dists);
 
-        if (use_pq) {
+        if (use_tq()) {
             for (int q = 0; q < nq; q++) {
-                pq_codebook.compute_precomputed_tables(queries + q * dim, dim);
+                std::vector<float> tq_table;
+                float tq_bias = 0.0f;
+                float q_sq = 0.0f;
+                const float* query = queries + (size_t)q * dim;
+                for (int i = 0; i < dim; i++) q_sq += query[i] * query[i];
+                tq_codebook.build_query_table(query, tq_table, tq_bias);
 
                 for (int c = 0; c < n_clusters; c++)
                     sorted_dists[c] = {c, centroid_dists_sq[q * n_clusters + c]};
@@ -1383,13 +1492,13 @@ public:
 
                 for (int p = 0; p < probes; p++) {
                     int cluster_id = sorted_dists[p].first;
-                    PQCluster& pq_cluster = pq_clusters[cluster_id];
-                    for (int i = 0; i < pq_cluster.size; i++) {
-                        int id = pq_cluster.ids[i];
+                    TQCluster& tq_cluster = tq_clusters[cluster_id];
+                    for (int i = 0; i < tq_cluster.size; i++) {
+                        int id = tq_cluster.ids[i];
                         if (deleted_ids.count(id)) continue;
-                        float dist = 0;
-                        for (int m = 0; m < pq_m; m++)
-                            dist += pq_codebook.precomputed_tables[m][pq_cluster.codes[i * pq_m + m]];
+                        const uint8_t* codes = tq_cluster.codes + (size_t)i * dim;
+                        float ip = tq_codebook.score_ip(tq_table.data(), tq_bias, codes, tq_cluster.scales[i]);
+                        float dist = tq_codebook.l2sq(q_sq, tq_cluster.sqnorms[i], ip);
                         results.push_back({id, dist});
                     }
                 }
@@ -1458,7 +1567,7 @@ public:
                     if (deleted_ids.count(cluster.ids[i])) has_deleted = true;
                 if (has_deleted) {
                     compact_cluster(c);
-                    compact_pq_cluster(c);
+                    compact_tq_cluster(c);
                 }
 
                 int mc = cluster.size;
@@ -1531,8 +1640,8 @@ public:
 
         train_centroids(ptr, (int)n);
 
-        if (use_pq) {
-            pq_codebook.train(ptr, (int)n, dim);
+        if (use_tq()) {
+            tq_codebook.train(ptr, (int)n, dim, tq_bits, tq_calibrate);
         }
 
         for (ssize_t i = 0; i < n; i++) {
@@ -1575,10 +1684,11 @@ public:
     
                 id_to_location[id].push_back({cluster_id, pos});
                 cluster_live_count[cluster_id]++;
-                if (use_pq) {
-                    std::vector<uint8_t> codes(pq_m);
-                    pq_codebook.encode(ptr + i * dim, dim, codes.data());
-                    pq_clusters[cluster_id].add_codes(codes.data(), pq_m, id);
+                if (use_tq()) {
+                    std::vector<uint8_t> codes(dim);
+                    float scale = 0.0f, sqnorm = 0.0f;
+                    tq_codebook.encode(ptr + i * dim, codes.data(), &scale, &sqnorm);
+                    tq_clusters[cluster_id].add_codes(codes.data(), dim, scale, sqnorm, id);
                 }
             }
         }
@@ -1622,10 +1732,11 @@ public:
     
                 id_to_location[id].push_back({cluster_id, pos});
                 cluster_live_count[cluster_id]++;
-                if (use_pq) {
-                    std::vector<uint8_t> codes(pq_m);
-                    pq_codebook.encode(ptr + i * dim, dim, codes.data());
-                    pq_clusters[cluster_id].add_codes(codes.data(), pq_m, id);
+                if (use_tq()) {
+                    std::vector<uint8_t> codes(dim);
+                    float scale = 0.0f, sqnorm = 0.0f;
+                    tq_codebook.encode(ptr + i * dim, codes.data(), &scale, &sqnorm);
+                    tq_clusters[cluster_id].add_codes(codes.data(), dim, scale, sqnorm, id);
                 }
             }
         }
@@ -1749,13 +1860,14 @@ public:
         int old_nc = n_clusters;
         n_clusters = nc;
         clusters.resize(nc);
-        pq_clusters.resize(nc);
+        tq_clusters.resize(nc);
         cluster_live_count.resize(nc, 0);
         for (int c = old_nc; c < nc; c++) {
             std::string path = use_mmap
                 ? mmap_dir + "/cluster_" + std::to_string(c) + ".bin"
                 : std::string();
             clusters[c].init(dim, path, /*truncate_new=*/use_mmap);
+            tq_clusters[c].set_code_size(dim);
         }
     }
 
@@ -1846,18 +1958,17 @@ public:
         stats["n_physical_slots"]   = total_physical;
         stats["n_clusters"]         = n_clusters;
         stats["dim"]                = dim;
-        stats["use_pq"]             = use_pq;
+        stats["quant"]              = quant;
         stats["soft_k"]             = soft_k;
         stats["deleted_count"]      = (int)deleted_ids.size();
         stats["max_cluster_size"]   = max_live_size;   // live vectors only
         stats["mean_cluster_size"]  = n_clusters > 0
             ? (float)total_live / n_clusters : 0.f;
-        if (use_pq) {
-            stats["pq_m"]  = pq_m;
-            stats["pq_ks"] = pq_ks;
+        if (use_tq()) {
+            stats["tq_bits"] = tq_bits;
             size_t orig_size = (size_t)total_physical * dim * sizeof(float);
-            size_t pq_size   = (size_t)total_physical * pq_m;
-            stats["compression_ratio"] = pq_size > 0 ? (float)orig_size / pq_size : 0.f;
+            size_t tq_size = (size_t)total_physical * (((size_t)tq_bits * dim + 7) / 8 + 8);
+            stats["compression_ratio"] = tq_size > 0 ? (float)orig_size / tq_size : 0.f;
         }
         return stats;
     }
@@ -1867,13 +1978,12 @@ PYBIND11_MODULE(copenhagen, m) {
     m.doc() = "Copenhagen - A Quantum-Inspired Dynamic IVF Index";
 
     py::class_<DynamicIVF>(m, "DynamicIVF")
-        .def(py::init<int, int, int, int, int, int, int, bool, const std::string&, bool>(),
+        .def(py::init<int, int, int, const std::string&, int, int, bool, const std::string&, bool>(),
              py::arg("dim"),
              py::arg("n_clusters"),
              py::arg("nprobe")              = 1,
-             py::arg("use_pq")              = 0,
-             py::arg("pq_m")                = 8,
-             py::arg("pq_ks")               = 256,
+             py::arg("quant")               = "none",
+             py::arg("tq_bits")             = 4,
              py::arg("soft_k")              = 1,
              py::arg("use_mmap")            = false,
              py::arg("mmap_dir")            = "",
