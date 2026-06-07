@@ -53,7 +53,7 @@ Dynamics — vs FAISS IVF and HNSW
 
 50 000 initial vectors, 10 rounds, +1 000 inserts and 30 % oldest deleted per
 round, :math:`d=128`. Representative final-round result from
-``REPORT_20260607_000220`` on Linux x86_64:
+``REPORT_20260607_215454`` on Linux x86_64:
 
 .. list-table:: Recall@10 and throughput at ~93 % cumulative churn
    :header-rows: 1
@@ -62,33 +62,38 @@ round, :math:`d=128`. Representative final-round result from
      - recall@10
      - inserts/s
      - deletes/s
-   * - **Copenhagen**
-     - **0.93–0.95**
-     - **~0.84-0.97 M**
-     - **~1.49 M**
+   * - **Copenhagen** (vs FAISS IVF run)
+     - **0.937**
+     - **~603 k**
+     - **~1.15 M**
+   * - **Copenhagen** (vs HNSW run)
+     - **0.937**
+     - **~659 k**
+     - **~684 k**
    * - FAISS IVF + filter
-     - 0.64
+     - 0.642
      - —
      - (tombstone)
    * - FAISS IVF + rebuild
-     - 0.80
-     - ~339 k
+     - 0.803
+     - ~286 k
      - (rebuild)
    * - HNSW + filter
-     - 0.28
+     - 0.275
      - —
      - (tombstone)
    * - HNSW + rebuild
-     - 0.92
-     - ~8.3 k
+     - 0.920
+     - ~7.9 k
      - (rebuild)
 
 Copenhagen stays near rebuild-level recall while updating much faster, and never
-goes offline.
+goes offline. The two Copenhagen rows come from the separate IVF-churn and
+HNSW-churn benchmark scripts in the published report.
 
 
-Compression — Copenhagen vs TurboVec vs legacy baseline
-=======================================================
+Compression — Copenhagen vs TurboVec
+====================================
 
 .. code-block:: bash
 
@@ -106,10 +111,10 @@ Compression — Copenhagen vs TurboVec vs legacy baseline
      - 0.9971
      - 512
      - 1.0×
-   * - Legacy compressed path
-     - 0.6463
-     - 528
-     - *0.97× (larger than float in absolute bytes)*
+   * - Copenhagen TQ-4bit (SIMD fast-scan)
+     - 0.8770
+     - 584
+     - 0.9×
    * - TurboVec 4-bit
      - 0.8476
      - 68
@@ -127,10 +132,38 @@ Compression — Copenhagen vs TurboVec vs legacy baseline
      - 40
      - 12.8×
 
-The removed legacy compressed path was dominated on both axes. Details and
-removal rationale are in ``IVFPQ.md``. TurboVec still wins bytes decisively in
-this comparison; that is the motivation for continuing to improve the
-integrated TurboQuant path.
+Copenhagen's integrated TQ path keeps float32 vectors for exact rerank, deletes,
+and splits, so the SIMD fast-scan mode is a recall / scan-speed upgrade rather
+than a memory win. The compression gain comes from the block-VQ path. The
+removed PQ path and its rationale remain in ``IVFPQ.md``.
+
+
+SIMD fast-scan scoring kernel
+=============================
+
+.. code-block:: bash
+
+   c++ -O3 -std=c++17 -march=native benchmarks/bench_score_ip.cpp -o /tmp/bench_score_ip
+   /tmp/bench_score_ip
+
+.. list-table:: TurboQuant 4-bit fast-scan speedup vs scalar scorer
+   :header-rows: 1
+
+   * - ISA
+     - 128d
+     - 768d
+     - 1536d
+   * - Apple Silicon NEON
+     - 22×
+     - 30×
+     - 31×
+   * - Intel Xeon AVX2
+     - 25×
+     - 12.5×
+     - 10×
+
+The kernel is bit-exact with the scalar reference and is the default scoring
+route for ``tq_bits <= 4`` on recognized NEON / AVX2 hosts.
 
 
 Quantizer micro-benchmarks

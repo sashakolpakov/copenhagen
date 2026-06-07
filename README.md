@@ -4,7 +4,7 @@ A fully dynamic approximate nearest neighbor (ANN) index built on Inverted File 
 
 Standard ANN indexes (FAISS IVF, HNSW) assume a static or slowly-changing dataset. When data drifts — new product SKUs, freshly-published articles, continuous message embeddings — their centroids no longer represent the full data manifold, clusters grow massively imbalanced, and recall collapses for new-data queries. Copenhagen solves this with three mechanisms that compose:
 
-- **O(1) amortized insert** — per-vector cost is constant in n (fixed clusters k, dimension d); stays flat from 5k to 100k+ vectors on real data while HNSW insert cost grows 30× over the same range
+- **O(1) amortized insert** — per-vector cost is constant in n (fixed clusters k, dimension d); in the latest SIFT-128 run CPH grows just 1.29× from 5k to 100k vectors while HNSW grows 7.16×
 - **O(1) tombstone delete** with lazy compaction at search time
 - **Soft multi-cluster assignment** (`soft_k`) for recall near Voronoi boundaries
 - **Adaptive cluster splitting** — adds new centroids only where drift has overloaded an existing cell, no offline rebuild
@@ -19,7 +19,7 @@ The design draws on the logarithmic-method bucket structure and tombstone correc
 
 | Scenario | Why Copenhagen |
 |---|---|
-| E-commerce catalog — 10k new SKUs/hour | 1.3-1.8 µs/vector insert, never goes offline; adaptive splits recover recall after catalog expansions |
+| E-commerce catalog — 10k new SKUs/hour | 2.1-2.6 µs/vector insert at 25k-50k scale, or ~603k-659k inserts/s under 30% churn; never goes offline |
 | News / real-time content index | O(1) tombstone delete (0.3 µs/delete, zero leaked results); FAISS IVF has no native delete primitive |
 | Chat / document embedding cache | `soft_k=2` keeps recall high at Voronoi boundaries; storage overhead is exactly 2× standard IVF |
 | Streaming with gradual drift | Recall stays stable as new-distribution vectors arrive in batches; FAISS degrades monotonically |
@@ -135,6 +135,7 @@ for cs in idx.get_cluster_stats():
 ## Benchmark results
 
 Full results and run instructions: **[BENCHMARKS.md](BENCHMARKS.md)**
+Latest published report: `benchmarks/results/REPORT_20260607_215454.md`
 
 ### Distribution drift — MNIST → Fashion-MNIST (784d, quick mode)
 
@@ -155,9 +156,9 @@ On the latest full Linux run, Copenhagen best is 2.2x faster to insert than FAIS
 
 | Method | Recall at batch 1 | Mid | Final |
 |---|---|---|---|
-| FAISS add-only | 0.946 | 0.977 | 0.980 |
-| Copenhagen baseline | 0.921 | 0.958 | 0.964 |
-| Copenhagen best (soft_k=2 + splits) | **0.972** | **0.988** | **0.990** |
+| FAISS add-only | 0.9455 | 0.9770 | 0.9795 |
+| Copenhagen baseline | 0.9210 | 0.9580 | 0.9635 |
+| Copenhagen best (soft_k=2 + splits) | **0.9720** | **0.9875** | **0.9900** |
 
 Copenhagen best leads FAISS from the first batch (+2.65pp) and finishes +1.05pp ahead.
 
@@ -165,11 +166,13 @@ Copenhagen best leads FAISS from the first batch (+2.65pp) and finishes +1.05pp 
 
 | n       | CPH µs/vec | CPH R@10 | FAISS IVF µs/vec | IVF R@10 | HNSW µs/vec | HNSW R@10 |
 |---------|-----------|----------|-----------------|----------|------------|----------|
-| 5,000   | 1.18      | 0.991    | 0.50            | 0.951    | 75.96      | 1.000    |
-| 25,000  | 1.39      | 0.996    | 0.59            | 0.970    | 214.41     | 1.000    |
-| 100,000 | 1.82      | 0.999    | 0.54            | 0.985    | 512.70     | 0.995    |
+| 5,000   | 1.77      | 0.991    | 0.70            | 0.951    | 132.62     | 1.000    |
+| 10,000  | 2.25      | 0.996    | 0.82            | 0.975    | 209.91     | 0.999    |
+| 25,000  | 2.13      | 0.996    | 0.96            | 0.970    | 348.63     | 0.998    |
+| 50,000  | 2.56      | 0.999    | 0.83            | 0.975    | 509.77     | 0.997    |
+| 100,000 | 2.28      | 0.999    | 1.01            | 0.985    | 950.18     | 0.996    |
 
-CPH and FAISS IVF both stay effectively flat in insert cost. In the latest run CPH grows 1.54x over a 20x scale-up, IVF 1.08x, while HNSW grows 6.75x. CPH recall (0.991-0.999) still exceeds IVF (0.951-0.985) at the same `nprobe` on this dataset.
+CPH and FAISS IVF both stay effectively flat in insert cost. In the latest run CPH grows 1.29x over a 20x scale-up, IVF 1.44x, while HNSW grows 7.16x. CPH recall (0.991-0.999) still exceeds IVF (0.951-0.985) at the same `nprobe` on this dataset.
 
 ### Static recall vs HNSW (SIFT-100k, d=128)
 
@@ -184,10 +187,10 @@ Full recall/QPS table: [BENCHMARKS.md §8](BENCHMARKS.md).
 | FAISS IVF + filter | 0.642 | — | — |
 | FAISS IVF + rebuild | 0.803 | ~339k | — |
 | HNSW + filter | 0.276 | — | — |
-| HNSW + rebuild | 0.916 | ~8.3k | — |
-| Copenhagen | **0.937** | **~839k** | **~1.49M** |
+| HNSW + rebuild | 0.920 | ~7.9k | — |
+| Copenhagen | **0.937** | **~603k-659k** | **~684k-1.15M** |
 
-By round 10 (~93% cumulative churn), Copenhagen stays near rebuild-level recall while deleting about 180x faster than HNSW's rebuild throughput and inserting about 2.5x faster than FAISS IVF rebuild. Full per-round tables are in [BENCHMARKS.md](BENCHMARKS.md).
+By round 10 (~93% cumulative churn), Copenhagen stays near rebuild-level recall while inserting about 2.1x faster than FAISS IVF rebuild and about 83x faster than HNSW rebuild. The delete-rate range above comes from the two churn runs (`benchmark_ivf_churn.py` and `benchmark_hnsw_churn.py`), both reported in [BENCHMARKS.md](BENCHMARKS.md).
 
 ### Tombstone delete
 
@@ -228,6 +231,11 @@ block-transposed, 32 vectors scored per dimension with one `vqtbl1q_u8` (NEON) /
 faster than the scalar loop, bit-exact with it, and recall-preserving; an
 unrecognized ISA falls back to a scalar-block kernel over the same layout. See
 [BENCHMARKS.md §6](BENCHMARKS.md).
+
+| ISA | 128d | 768d | 1536d |
+|---|---|---|---|
+| Apple Silicon NEON | 22× | 30× | 31× |
+| Intel Xeon AVX2 | 25× | 12.5× | 10× |
 
 **Why TurboVec struggles at low dimension — and what we do about it.** After a
 random rotation, a unit vector's coordinates are Beta-distributed and, crucially,
