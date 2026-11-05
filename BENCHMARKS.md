@@ -8,6 +8,35 @@ Recall figures are host-independent; insert/delete/QPS throughput is host-specif
 
 ---
 
+## Remote ANN-Benchmarks Workflow
+
+For upstream `erikbern/ann-benchmarks` runs on a remote box, use
+[`benchmarks/ann_benchmarks_remote.py`](benchmarks/ann_benchmarks_remote.py)
+with a JSON config like
+[`benchmarks/configs/ann_benchmarks_remote.example.json`](benchmarks/configs/ann_benchmarks_remote.example.json).
+
+Core behavior:
+- SSH to a remote Linux host, clone or update `ann-benchmarks`, and install Python deps.
+- Optionally sync local overlay files into the remote checkout, which is the hook for your own algorithm wrapper or Dockerfile additions.
+- Build either all upstream algorithm images or just the algorithm directories you name.
+- Run `python run.py` one dataset at a time, matching the upstream result layout under `results/<dataset>/<k>/...`.
+- Poll the remote job for PID liveness, result-file growth, log growth, Docker activity, and free disk; optionally kill the run on low disk or prolonged stalls.
+- Export `results.csv` via `data_export.py`, render the website via `create_website.py`, and sync the artifacts back locally.
+
+Typical use:
+
+```bash
+python3 benchmarks/ann_benchmarks_remote.py \
+  benchmarks/configs/ann_benchmarks_remote.example.json
+```
+
+Notes:
+- Set `"datasets"` to `[]` or remove it to resolve all datasets from the upstream checkout.
+- Keep `"run.algorithms"` and `"build.algorithm_dirs"` as small as possible unless you explicitly want the full matrix; that is the main control against wasted compute.
+- The remote host needs `bash`, `git`, `python3`, `docker`, and `rsync`.
+
+---
+
 ## 1. Streaming Churn vs HNSW (`benchmark_hnsw_churn.py`)
 
 **Scenario**: n_init=50,000, +1,000 inserts/round, delete 30% oldest/round.

@@ -1,0 +1,45 @@
+float:
+  any:
+  - base_args: ['@metric', '@dimension']
+    constructor: Copenhagen
+    disabled: false
+    docker_tag: ann-benchmarks-copenhagen
+    module: ann_benchmarks.algorithms.copenhagen
+    name: copenhagen
+    run_groups:
+      cheap:
+        args:
+          cluster_factor: 0.35
+          soft_k: 1
+          split_threshold: 4.0
+          initial_nprobe: 4
+          min_clusters: 16
+          max_clusters: 2048
+          train_sample_size: 250000
+          insert_batch_size: 50000
+          force_mmap_threshold: 1000000
+        query_args: [[4]]
+      medium:
+        args:
+          cluster_factor: 0.5
+          soft_k: 1
+          split_threshold: 3.0
+          initial_nprobe: 8
+          min_clusters: 16
+          max_clusters: 4096
+          train_sample_size: 250000
+          insert_batch_size: 50000
+          force_mmap_threshold: 1000000
+        query_args: [[8]]
+      strong:
+        args:
+          cluster_factor: 0.5
+          soft_k: 2
+          split_threshold: 3.0
+          initial_nprobe: 16
+          min_clusters: 16
+          max_clusters: 4096
+          train_sample_size: 250000
+          insert_batch_size: 50000
+          force_mmap_threshold: 1000000
+        query_args: [[16]]

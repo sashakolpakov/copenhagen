@@ -1,0 +1,124 @@
+{
+  "remote": {
+    "host": "192.9.153.168",
+    "user": "ubuntu",
+    "port": 22,
+    "docker_sudo": true,
+    "extra_ssh_args": [
+      "-o",
+      "StrictHostKeyChecking=accept-new"
+    ]
+  },
+  "remote_root": "~/annb-runs-smoke",
+  "local_output_root": "benchmarks/annb_remote_runs",
+  "ann_benchmarks_repo": {
+    "url": "https://github.com/erikbern/ann-benchmarks.git",
+    "ref": "main",
+    "checkout_dir": "ann-benchmarks"
+  },
+  "datasets": [
+    "mnist-784-euclidean"
+  ],
+  "sync": [
+    {
+      "local_path": "benchmarks/annb_overlays/copenhagen",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen",
+      "delete": false
+    },
+    {
+      "local_path": "src",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/src",
+      "delete": true
+    },
+    {
+      "local_path": "python",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/python",
+      "delete": true
+    },
+    {
+      "local_path": "setup.py",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/setup.py"
+    },
+    {
+      "local_path": "pyproject.toml",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/pyproject.toml"
+    },
+    {
+      "local_path": "README.md",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/README.md"
+    },
+    {
+      "local_path": "LICENSE",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/LICENSE"
+    }
+  ],
+  "build": {
+    "algorithm_dirs": [
+      "base",
+      "copenhagen"
+    ],
+    "proc": 1,
+    "build_args": [],
+    "skip": false
+  },
+  "parameter_pruning": {
+    "enabled": true,
+    "algorithms": {
+      "copenhagen": {
+        "replace_run_groups_by_definition": {
+          "copenhagen": {
+            "smoke": {
+              "args": {
+                "cluster_factor": 0.25,
+                "soft_k": 1,
+                "split_threshold": 4.0,
+                "initial_nprobe": 4,
+                "min_clusters": 16,
+                "max_clusters": 512
+              },
+              "query_args": [[4]]
+            }
+          }
+        }
+      }
+    }
+  },
+  "run": {
+    "algorithms": [
+      "copenhagen"
+    ],
+    "count": 10,
+    "runs": 1,
+    "parallelism": 1,
+    "timeout_seconds": 1800,
+    "force": true,
+    "batch": false,
+    "local": false,
+    "run_disabled": true,
+    "max_n_algorithms": -1,
+    "log_dir": "benchmarks/remote_logs"
+  },
+  "monitor": {
+    "poll_seconds": 30,
+    "stall_minutes": 30,
+    "min_free_disk_gb": 10,
+    "stop_on_stall": true,
+    "stop_on_low_disk": true
+  },
+  "policy": {
+    "baseline_algorithm": "copenhagen",
+    "baseline_multiplier": 1.15,
+    "skip_rest_if_baseline_fails": true
+  },
+  "export": {
+    "remote_artifact_dir": "artifacts/smoke",
+    "plot_each_dataset": true
+  },
+  "download": {
+    "paths": [
+      "results",
+      "figures"
+    ],
+    "skip_download": false
+  }
+}

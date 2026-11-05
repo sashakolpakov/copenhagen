@@ -1,0 +1,578 @@
+{
+  "remote": {
+    "host": "203.0.113.10",
+    "user": "ubuntu",
+    "port": 22,
+    "docker_sudo": true,
+    "identity_file": "~/.ssh/id_ed25519",
+    "extra_ssh_args": [
+      "-o",
+      "StrictHostKeyChecking=accept-new"
+    ]
+  },
+  "remote_root": "~/annb-runs",
+  "local_output_root": "benchmarks/annb_remote_runs",
+  "ann_benchmarks_repo": {
+    "url": "https://github.com/erikbern/ann-benchmarks.git",
+    "ref": "main",
+    "checkout_dir": "ann-benchmarks"
+  },
+  "datasets": [
+    "sift-128-euclidean",
+    "glove-100-angular"
+  ],
+  "sync": [
+    {
+      "local_path": "benchmarks/annb_overlays/copenhagen",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen",
+      "delete": false
+    },
+    {
+      "local_path": "src",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/src",
+      "delete": true
+    },
+    {
+      "local_path": "python",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/python",
+      "delete": true
+    },
+    {
+      "local_path": "setup.py",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/setup.py"
+    },
+    {
+      "local_path": "pyproject.toml",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/pyproject.toml"
+    },
+    {
+      "local_path": "README.md",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/README.md"
+    },
+    {
+      "local_path": "LICENSE",
+      "remote_rel_path": "ann_benchmarks/algorithms/copenhagen/vendor/copenhagen/LICENSE"
+    }
+  ],
+  "build": {
+    "algorithm_dirs": [
+      "base",
+      "annoy",
+      "faiss",
+      "glass",
+      "hnswlib",
+      "parlayann",
+      "scann",
+      "copenhagen"
+    ],
+    "proc": 1,
+    "build_args": [],
+    "skip": false
+  },
+  "parameter_pruning": {
+    "enabled": true,
+    "global": {
+      "keep_run_groups": 2,
+      "keep_query_args": 3,
+      "select": "head"
+    },
+    "algorithms": {
+      "faiss": {
+        "replace_run_groups_by_definition": {
+          "faiss-ivf": {
+            "cheap": {
+              "args": [
+                [
+                  128
+                ]
+              ],
+              "query_args": [
+                [
+                  5
+                ]
+              ]
+            },
+            "medium": {
+              "args": [
+                [
+                  512
+                ]
+              ],
+              "query_args": [
+                [
+                  10
+                ]
+              ]
+            },
+            "strong": {
+              "args": [
+                [
+                  2048
+                ]
+              ],
+              "query_args": [
+                [
+                  50
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "hnswlib": {
+        "replace_run_groups_by_definition": {
+          "hnswlib": {
+            "cheap": {
+              "arg_groups": [
+                {
+                  "M": 12,
+                  "efConstruction": 500
+                }
+              ],
+              "query_args": [
+                [
+                  20
+                ]
+              ]
+            },
+            "medium": {
+              "arg_groups": [
+                {
+                  "M": 24,
+                  "efConstruction": 500
+                }
+              ],
+              "query_args": [
+                [
+                  80
+                ]
+              ]
+            },
+            "strong": {
+              "arg_groups": [
+                {
+                  "M": 48,
+                  "efConstruction": 500
+                }
+              ],
+              "query_args": [
+                [
+                  200
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "annoy": {
+        "replace_run_groups_by_definition": {
+          "annoy": {
+            "cheap": {
+              "args": [
+                [
+                  100
+                ]
+              ],
+              "query_args": [
+                [
+                  2000
+                ]
+              ]
+            },
+            "medium": {
+              "args": [
+                [
+                  200
+                ]
+              ],
+              "query_args": [
+                [
+                  10000
+                ]
+              ]
+            },
+            "strong": {
+              "args": [
+                [
+                  400
+                ]
+              ],
+              "query_args": [
+                [
+                  40000
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "parlayann": {
+        "replace_run_groups_by_metric_definition": {
+          "euclidean": {
+            "parlayann": {
+              "cheap": {
+                "args": [
+                  {
+                    "alpha": 1.05,
+                    "R": 32,
+                    "L": 64,
+                    "two_pass": true
+                  }
+                ],
+                "query_args": [
+                  [
+                    {
+                      "Q": 10
+                    }
+                  ]
+                ]
+              },
+              "medium": {
+                "args": [
+                  {
+                    "alpha": 1.08,
+                    "R": 40,
+                    "L": 80,
+                    "two_pass": true
+                  }
+                ],
+                "query_args": [
+                  [
+                    {
+                      "Q": 20
+                    }
+                  ]
+                ]
+              },
+              "strong": {
+                "args": [
+                  {
+                    "alpha": 1.15,
+                    "R": 80,
+                    "L": 160,
+                    "two_pass": true
+                  }
+                ],
+                "query_args": [
+                  [
+                    {
+                      "Q": 100
+                    }
+                  ]
+                ]
+              }
+            }
+          },
+          "angular": {
+            "parlayann": {
+              "cheap": {
+                "args": [
+                  {
+                    "alpha": 0.95,
+                    "R": 50,
+                    "L": 100,
+                    "two_pass": true
+                  }
+                ],
+                "query_args": [
+                  [
+                    {
+                      "Q": 10
+                    }
+                  ]
+                ]
+              },
+              "medium": {
+                "args": [
+                  {
+                    "alpha": 0.9,
+                    "R": 80,
+                    "L": 160,
+                    "two_pass": true
+                  }
+                ],
+                "query_args": [
+                  [
+                    {
+                      "Q": 40
+                    }
+                  ]
+                ]
+              },
+              "strong": {
+                "args": [
+                  {
+                    "alpha": 0.85,
+                    "R": 130,
+                    "L": 260,
+                    "two_pass": true
+                  }
+                ],
+                "query_args": [
+                  [
+                    {
+                      "Q": 150
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        }
+      },
+      "glass": {
+        "replace_run_groups_by_definition": {
+          "glass": {
+            "cheap": {
+              "args": {
+                "L": 200,
+                "R": 16,
+                "level": 1
+              },
+              "query_args": [
+                [
+                  40
+                ]
+              ]
+            },
+            "medium": {
+              "args": {
+                "L": 200,
+                "R": 32,
+                "level": 2
+              },
+              "query_args": [
+                [
+                  120
+                ]
+              ]
+            },
+            "strong": {
+              "args": {
+                "L": 200,
+                "R": 64,
+                "level": 3
+              },
+              "query_args": [
+                [
+                  400
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "scann": {
+        "replace_run_groups_by_metric_definition": {
+          "angular": {
+            "scann": {
+              "cheap": {
+                "args": [
+                  [
+                    1000
+                  ],
+                  [
+                    0.2
+                  ],
+                  [
+                    1
+                  ],
+                  [
+                    "dot_product"
+                  ]
+                ],
+                "query_args": [
+                  [
+                    [
+                      8,
+                      30
+                    ]
+                  ]
+                ]
+              },
+              "medium": {
+                "args": [
+                  [
+                    1500
+                  ],
+                  [
+                    0.55
+                  ],
+                  [
+                    1
+                  ],
+                  [
+                    "dot_product"
+                  ]
+                ],
+                "query_args": [
+                  [
+                    [
+                      30,
+                      50
+                    ]
+                  ]
+                ]
+              },
+              "strong": {
+                "args": [
+                  [
+                    2000
+                  ],
+                  [
+                    0.2
+                  ],
+                  [
+                    2
+                  ],
+                  [
+                    "dot_product"
+                  ]
+                ],
+                "query_args": [
+                  [
+                    [
+                      150,
+                      200
+                    ]
+                  ]
+                ]
+              }
+            }
+          },
+          "euclidean": {
+            "scann": {
+              "cheap": {
+                "args": [
+                  [
+                    100
+                  ],
+                  [
+                    NaN
+                  ],
+                  [
+                    4
+                  ],
+                  [
+                    "squared_l2"
+                  ]
+                ],
+                "query_args": [
+                  [
+                    [
+                      3,
+                      30
+                    ]
+                  ]
+                ]
+              },
+              "medium": {
+                "args": [
+                  [
+                    600
+                  ],
+                  [
+                    NaN
+                  ],
+                  [
+                    2
+                  ],
+                  [
+                    "squared_l2"
+                  ]
+                ],
+                "query_args": [
+                  [
+                    [
+                      13,
+                      100
+                    ]
+                  ]
+                ]
+              },
+              "strong": {
+                "args": [
+                  [
+                    2000
+                  ],
+                  [
+                    NaN
+                  ],
+                  [
+                    4
+                  ],
+                  [
+                    "squared_l2"
+                  ]
+                ],
+                "query_args": [
+                  [
+                    [
+                      100,
+                      500
+                    ]
+                  ]
+                ]
+              }
+            }
+          }
+        }
+      },
+      "copenhagen": {
+        "keep_run_groups": 3,
+        "keep_query_args": 1
+      }
+    }
+  },
+  "run": {
+    "algorithms": [
+      "annoy",
+      "faiss-ivf",
+      "glass",
+      "hnswlib",
+      "parlayann",
+      "scann",
+      "copenhagen"
+    ],
+    "count": 10,
+    "runs": 5,
+    "parallelism": 8,
+    "timeout_seconds": 7200,
+    "force": false,
+    "batch": false,
+    "local": false,
+    "run_disabled": true,
+    "max_n_algorithms": -1,
+    "log_dir": "benchmarks/remote_logs"
+  },
+  "orchestrator": {
+    "max_concurrent_baselines": 1,
+    "baseline_parallelism": 4,
+    "followup_parallelism": 2,
+    "max_concurrent_followups": 1,
+    "total_core_budget": 8
+  },
+  "monitor": {
+    "poll_seconds": 60,
+    "stall_minutes": 60,
+    "min_free_disk_gb": 20,
+    "stop_on_stall": false,
+    "stop_on_low_disk": true
+  },
+  "policy": {
+    "baseline_algorithm": "copenhagen",
+    "baseline_multiplier": 1.15,
+    "skip_rest_if_baseline_fails": true
+  },
+  "export": {
+    "remote_artifact_dir": "artifacts/latest",
+    "plot_each_dataset": true
+  },
+  "download": {
+    "paths": [
+      "results",
+      "figures"
+    ],
+    "skip_download": false
+  }
+}

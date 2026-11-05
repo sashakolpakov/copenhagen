@@ -1,0 +1,7 @@
+{
+  "datasets": [
+    "mnist-784-euclidean"
+  ],
+  "count": 10,
+  "artifact_root": "artifacts/concurrent-check"
+}
