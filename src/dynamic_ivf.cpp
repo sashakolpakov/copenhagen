@@ -40,6 +40,8 @@
 #include <unordered_set>
 #include <string>
 #include <stdexcept>
+#include <memory>
+#include <new>
 
 #include "turbo_quant.hpp"
 #include "tq_fastscan.hpp"
@@ -189,12 +191,14 @@ struct Cluster {
     // Initialise a cluster. If path is non-empty, use mmap-backed storage.
     void init(int dim, const std::string& path = "", bool truncate_new = false) {
         vec_sum = (float*)aligned_alloc(32, dim * sizeof(float));
+        if (!vec_sum) throw std::bad_alloc();
         std::memset(vec_sum, 0, dim * sizeof(float));
         if (!path.empty()) {
             mmap_path = path;
             _mmap_open(64, dim, truncate_new);   // initial capacity 64 vectors
             ids   = (int*)malloc((size_t)capacity * sizeof(int));
             norms = (float*)malloc((size_t)capacity * sizeof(float));
+            if (!ids || !norms) throw std::bad_alloc();
         }
         // Heap mode: vectors and ids allocated lazily on first add_vector
     }
@@ -242,6 +246,9 @@ struct PQCodebook {
 
     PQCodebook() : M(0), Ks(0), d_sub(0), centroids(nullptr), precomputed_tables(nullptr) {}
 
+    PQCodebook(const PQCodebook&) = delete;
+    PQCodebook& operator=(const PQCodebook&) = delete;
+
     ~PQCodebook() {
         if (centroids) {
             for (int m = 0; m < M; m++) {
@@ -267,8 +274,10 @@ struct PQCodebook {
             throw std::runtime_error("PQ dimension must be evenly divisible by M");
         }
 
-        centroids = (float**)malloc(M * sizeof(float*));
-        precomputed_tables = (float**)malloc(M * sizeof(float*));
+        // Zero every slot so destruction is safe after a partial allocation.
+        centroids = (float**)calloc(M, sizeof(float*));
+        precomputed_tables = (float**)calloc(M, sizeof(float*));
+        if (!centroids || !precomputed_tables) throw std::bad_alloc();
         for (int m = 0; m < M; m++) {
             centroids[m] = (float*)aligned_alloc(32, Ks * d_sub * sizeof(float));
             precomputed_tables[m] = (float*)aligned_alloc(32, 256 * Ks * sizeof(float));
@@ -818,13 +827,22 @@ public:
         rng.seed(42);
         n_vectors = 0;
 
-        centroids = (float*)aligned_alloc(32, n_clusters * dim * sizeof(float));
-        std::memset(centroids, 0, n_clusters * dim * sizeof(float));
+        // A throwing constructor does not run ~DynamicIVF. Keep ownership in
+        // local guards until all buffers and clusters have been initialized.
+        using FloatBuffer = std::unique_ptr<float, decltype(&std::free)>;
+        FloatBuffer centroid_storage(
+            (float*)aligned_alloc(32, n_clusters * dim * sizeof(float)), &std::free);
+        if (!centroid_storage) throw std::bad_alloc();
+        std::memset(centroid_storage.get(), 0, n_clusters * dim * sizeof(float));
 
         max_vectors_per_probe = 100000;
-        search_buffer = (float*)aligned_alloc(32, max_vectors_per_probe * dim * sizeof(float));
-        norms_buffer  = (float*)malloc(max_vectors_per_probe * sizeof(float));
-        dists_buffer  = (float*)aligned_alloc(32, max_vectors_per_probe * sizeof(float));
+        FloatBuffer search_storage(
+            (float*)aligned_alloc(32, max_vectors_per_probe * dim * sizeof(float)), &std::free);
+        FloatBuffer norms_storage(
+            (float*)malloc(max_vectors_per_probe * sizeof(float)), &std::free);
+        FloatBuffer dists_storage(
+            (float*)aligned_alloc(32, max_vectors_per_probe * sizeof(float)), &std::free);
+        if (!search_storage || !norms_storage || !dists_storage) throw std::bad_alloc();
         search_ids.resize(max_vectors_per_probe);
 
         clusters.resize(n_clusters);
@@ -846,7 +864,15 @@ public:
             tq_fs_fn = cph::fastscan::select_block_fn();
             for (auto& tc : tq_clusters) tc.set_layout(dim, tq_width());
         }
+
+        centroids = centroid_storage.release();
+        search_buffer = search_storage.release();
+        norms_buffer = norms_storage.release();
+        dists_buffer = dists_storage.release();
     }
+
+    DynamicIVF(const DynamicIVF&) = delete;
+    DynamicIVF& operator=(const DynamicIVF&) = delete;
 
     bool use_tq() const { return quant == "tq"; }
 
@@ -1884,9 +1910,11 @@ public:
     void set_centroids(py::array_t<float> arr) {
         auto buf = arr.request();
         int nc = (int)buf.shape[0];
-        if (centroids) free(centroids);
-        centroids = (float*)aligned_alloc(32, (size_t)nc * dim * sizeof(float));
-        std::memcpy(centroids, buf.ptr, (size_t)nc * dim * sizeof(float));
+        float* new_centroids = (float*)aligned_alloc(32, (size_t)nc * dim * sizeof(float));
+        if (!new_centroids) throw std::bad_alloc();
+        std::memcpy(new_centroids, buf.ptr, (size_t)nc * dim * sizeof(float));
+        free(centroids);
+        centroids = new_centroids;
         int old_nc = n_clusters;
         n_clusters = nc;
         clusters.resize(nc);

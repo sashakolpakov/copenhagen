@@ -176,9 +176,9 @@ inline void block_avx2(const uint8_t* blk, const uint8_t* qlut, int dim,
     for (int d = 0; d < dim; d++) {
         const uint8_t* cp = blk + (size_t)d * kWidth;
         // Broadcast the 16-byte table into both 128-bit lanes (pshufb is per-lane).
-        __m128i lut128 = _mm_loadu_si128((const __m128i*)(qlut + (size_t)d * 16));
+        __m128i lut128 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(qlut + (size_t)d * 16));
         __m256i lut = _mm256_broadcastsi128_si256(lut128);
-        __m256i codes = _mm256_loadu_si256((const __m256i*)cp);  // 32 codes
+        __m256i codes = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(cp));  // 32 codes
         __m256i r = _mm256_shuffle_epi8(lut, codes);             // 32 looked-up bytes
         // Widen bytes -> uint16 and accumulate. unpack interleaves within lanes,
         // but the mapping is fixed and consistent, so spilled sums stay correct
@@ -204,10 +204,10 @@ inline void block_avx2(const uint8_t* blk, const uint8_t* qlut, int dim,
     //   a2 = [v8,v9,v10,v11, v24,v25,v26,v27]
     //   a3 = [v12,v13,v14,v15,v28,v29,v30,v31]
     alignas(32) uint32_t t0[8], t1[8], t2[8], t3[8];
-    _mm256_store_si256((__m256i*)t0, a0);
-    _mm256_store_si256((__m256i*)t1, a1);
-    _mm256_store_si256((__m256i*)t2, a2);
-    _mm256_store_si256((__m256i*)t3, a3);
+    _mm256_store_si256(reinterpret_cast<__m256i*>(t0), a0);
+    _mm256_store_si256(reinterpret_cast<__m256i*>(t1), a1);
+    _mm256_store_si256(reinterpret_cast<__m256i*>(t2), a2);
+    _mm256_store_si256(reinterpret_cast<__m256i*>(t3), a3);
     for (int i = 0; i < 4; i++) {
         sums[0  + i] = t0[i];   sums[16 + i] = t0[4 + i];
         sums[4  + i] = t1[i];   sums[20 + i] = t1[4 + i];

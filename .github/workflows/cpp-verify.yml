@@ -28,6 +28,7 @@ jobs:
           sudo apt-get install -y cppcheck
 
       - name: Run cppcheck
+        shell: bash
         run: |
           cppcheck \
             --enable=warning,performance,portability \
@@ -36,9 +37,7 @@ jobs:
             --suppress=missingIncludeSystem \
             --suppress=unusedFunction \
             --std=c++17 \
-            --output-file=cppcheck.log \
-            src/dynamic_ivf.cpp
-          cat cppcheck.log
+            src/dynamic_ivf.cpp 2>&1 | tee cppcheck.log
 
       - name: Upload cppcheck log
         if: always()
